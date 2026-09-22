@@ -34,6 +34,28 @@ pip install xtquant
 `xtquant` 只发布 Windows 轮子(`win_amd64.pyd`)且需要 QMT 客户端在运行。
 本包把取数与计算分开,**除 `feed.fetch_*` 外全部是纯函数**,在任何平台都能跑测试。
 
+## 快速开始
+
+第一次使用,按这个顺序来 —— 每一步都能把问题定位到具体环节:
+
+```bash
+# 1. 环境自检:确认 QMT 能取数,并端到端跑通一次判定
+python scripts/smoke_test.py
+
+# 2. 小规模试跑:先看 50 只,确认流程通畅(全市场首次下载很慢)
+python -m ema_strategy --date 20260904 --sector 沪深300 --limit 50
+
+# 3. 全市场选股
+python -m ema_strategy --date 20260904 --out picks.csv
+
+# 4. 看历史效果
+python scripts/backtest.py --start 20240101 --end 20260904 --sector 沪深300
+```
+
+QMT 客户端必须已启动并登录,否则第 1 步就会失败。
+全市场(约 5000 只)首次下载历史数据可能需要几十分钟到数小时,
+`--limit` 和 `--sector` 可以先把范围缩小。
+
 ## 用法
 
 ```bash
@@ -48,7 +70,8 @@ python -m ema_strategy --date 20260904 --no-start-bar
 
 # 样本统计(--csv-dir 可用本地CSV,不依赖 QMT)
 python scripts/backtest.py --start 20220101 --end 20260904
-python scripts/backtest.py --csv-dir tests
+python scripts/backtest.py --csv-dir tests          # 用本地CSV,不依赖 QMT
+python scripts/backtest.py --limit 100              # 先跑 100 只
 ```
 
 `--explain` 输出示例:

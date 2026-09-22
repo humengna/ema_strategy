@@ -33,6 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="放宽「启动点须贯穿」(实测该条件为负贡献,见 README)")
     ap.add_argument("--distinct-days", action="store_true",
                     help="要求三个金叉分属不同交易日")
+    ap.add_argument("--limit", type=int, default=0,
+                    help="只取股票池前 N 只,用于先小规模试跑(0=不限制)")
     ap.add_argument("--explain", default="", metavar="CODE", help="只诊断这一只股票")
     ap.add_argument("--out", default="picks.csv")
     return ap
@@ -54,6 +56,8 @@ def main(argv=None) -> int:
 
     codes = ([c.strip() for c in args.codes.split(",") if c.strip()] if args.codes
              else feed.fetch_universe(args.sector, asof=args.date))
+    if args.limit:
+        codes = codes[:args.limit]
     print(f"选股日 {args.date} | 标的 {len(codes)} 只 | 行情自 {start} | 复权 {args.dividend}")
 
     picks = scan(args.date, codes, start, params, args.dividend,

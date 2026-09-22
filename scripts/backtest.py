@@ -77,6 +77,8 @@ def main(argv=None) -> int:
     ap.add_argument("--sector", default="沪深A股")
     ap.add_argument("--csv-dir", default="", dest="csv_dir",
                     help="用本地CSV目录代替 xtdata(便于无 QMT 环境验证)")
+    ap.add_argument("--limit", type=int, default=0,
+                    help="只取股票池前 N 只,用于先小规模试跑(0=不限制)")
     ap.add_argument("--max-span", type=int, default=60, dest="max_span")
     ap.add_argument("--out", default="backtest_events.csv")
     a = ap.parse_args(argv)
@@ -92,6 +94,8 @@ def main(argv=None) -> int:
     else:
         codes = ([c.strip() for c in a.codes.split(",") if c.strip()] if a.codes
                  else feed.fetch_universe(a.sector, asof=a.end or None))
+        if a.limit:
+            codes = codes[:a.limit]
         print(f"标的 {len(codes)} 只")
         for i in range(0, len(codes), 200):
             chunk = codes[i:i + 200]
