@@ -23,6 +23,7 @@
 """
 from __future__ import annotations
 
+import sys
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Iterable, Optional
 
@@ -122,6 +123,22 @@ def is_st_name(name: Optional[str]) -> bool:
     return bool(name) and ("ST" in name.upper() or "退" in name)
 
 
+def parse_ymd(value) -> Optional[pd.Timestamp]:
+    """把 xtdata 的 YYYYMMDD 日期字段解析为 Timestamp,无法解析时返回 None。
+
+    OpenDate / ExpireDate 并不总是合法日期:未退市的合约 ExpireDate 常填
+    哨兵值 99999999,也可能是 0、空串或其他长度。这些值用
+    pd.to_datetime(..., format="%Y%m%d") 直接解析会抛 ValueError
+    ("unconverted data remains: 99"),足以中断整轮全市场扫描。
+    一律返回 None,由调用方按「未知」处理。
+    """
+    text = str(value or "").strip()
+    if len(text) != 8 or not text.isdigit():
+        return None
+    ts = pd.to_datetime(text, format="%Y%m%d", errors="coerce")
+    return None if pd.isna(ts) else ts
+
+
 # ------------------------------------------------------------- 取数(需 Windows + QMT)
 def fetch_daily(codes: Iterable[str], start: str, end: str,
                 dividend_type: str = "back", download: bool = True) -> dict:
@@ -139,25 +156,46 @@ def fetch_daily(codes: Iterable[str], start: str, end: str,
 
 
 def fetch_universe(sector: str = "沪深A股", exclude_st: bool = True,
-                   min_listed_days: int = 120, asof: Optional[str] = None) -> list[str]:
-    """取板块成分并剔除 ST / 次新 / 已退市。"""
+                   min_listed_days: int = 120, asof: Optional[str] = None,
+                   verbose: bool = True) -> list[str]:
+    """取板块成分并剔除 ST / 次新 / 已退市。
+
+    单只合约的信息异常不会中断整轮扫描,只记数并跳过。
+    """
     from xtquant import xtdata
 
     asof_ts = pd.Timestamp(asof) if asof else pd.Timestamp.today()
-    out = []
+    out, skipped = [], {"no_detail": 0, "st": 0, "new": 0, "delisted": 0, "error": 0}
+
     for code in xtdata.get_stock_list_in_sector(sector) or []:
-        info = xtdata.get_instrument_detail(code)
-        if not info:
-            continue
-        if exclude_st and is_st_name(info.get("InstrumentName")):
-            continue
-        opened = str(info.get("OpenDate") or "")
-        if len(opened) == 8 and (asof_ts - pd.to_datetime(opened, format="%Y%m%d")).days < min_listed_days:
-            continue
-        expire = str(info.get("ExpireDate") or "")
-        if len(expire) == 8 and pd.to_datetime(expire, format="%Y%m%d") <= asof_ts:
-            continue
-        out.append(code)
+        try:
+            info = xtdata.get_instrument_detail(code)
+            if not info:
+                skipped["no_detail"] += 1
+                continue
+            if exclude_st and is_st_name(info.get("InstrumentName")):
+                skipped["st"] += 1
+                continue
+
+            opened = parse_ymd(info.get("OpenDate"))
+            if opened is not None and (asof_ts - opened).days < min_listed_days:
+                skipped["new"] += 1
+                continue
+
+            expire = parse_ymd(info.get("ExpireDate"))
+            if expire is not None and expire <= asof_ts:
+                skipped["delisted"] += 1
+                continue
+
+            out.append(code)
+        except Exception as exc:                 # 单只异常不应中断整轮扫描
+            skipped["error"] += 1
+            print(f"  跳过 {code}: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+    if verbose and any(skipped.values()):
+        print(f"  股票池筛选: 保留 {len(out)} 只 | 剔除 "
+              f"ST {skipped['st']}、次新 {skipped['new']}、退市 {skipped['delisted']}"
+              f"、无合约信息 {skipped['no_detail']}、异常 {skipped['error']}")
     return out
 
 

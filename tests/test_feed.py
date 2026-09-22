@@ -101,3 +101,29 @@ def test_gap_flags_empty():
 ])
 def test_is_st_name(name, expected):
     assert is_st_name(name) == expected
+
+
+@pytest.mark.parametrize("value", [
+    "99999999", 99999999,      # 未退市合约的哨兵值 —— 曾导致全市场扫描中断
+    "9999999999", "00000000", "0", "", None, 0,
+    "2099-12-31", "2024010", "abcdefgh",
+])
+def test_parse_ymd_rejects_invalid(value):
+    """任何非法/哨兵日期一律返回 None,不得抛异常。
+
+    回归测试:ExpireDate=99999999 会让 pd.to_datetime(format="%Y%m%d")
+    抛 ValueError("unconverted data remains: 99"),中断整轮扫描。
+    """
+    from ema_strategy.feed import parse_ymd
+    assert parse_ymd(value) is None
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("20991231", "2099-12-31"),
+    ("19910403", "1991-04-03"),
+    (20240102, "2024-01-02"),
+    ("  20240102  ", "2024-01-02"),
+])
+def test_parse_ymd_accepts_valid(value, expected):
+    from ema_strategy.feed import parse_ymd
+    assert parse_ymd(value) == pd.Timestamp(expected)
