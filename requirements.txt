@@ -1,0 +1,4 @@
+pandas>=2.0
+numpy>=1.24
+# 行情数据源(仅 Windows + QMT 客户端环境需要;测试不依赖)
+# xtquant>=250807.1.2
