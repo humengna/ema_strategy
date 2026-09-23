@@ -25,6 +25,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ema_strategy import feed                                   # noqa: E402
+from ema_strategy.io_utils import safe_to_csv                   # noqa: E402
 from ema_strategy.bull import BullParams                        # noqa: E402
 from ema_strategy.bull import run as bull_run                   # noqa: E402
 from ema_strategy.portfolio import PortfolioParams, metrics, simulate   # noqa: E402
@@ -281,23 +282,25 @@ def main(argv=None) -> int:
 
     if a.mode == "rebalance":
         res = rb_simulate(bars_by_code, sigs, p_rb, scores)
-        pd.DataFrame({"equity": res["equity"], "benchmark": res["benchmark"],
-                      "holdings": res["holdings"]}).to_csv(a.out, encoding="utf-8-sig")
+        report_rebalance(res, p_rb)          # 先出报告,再落盘
+        curve = pd.DataFrame({"equity": res["equity"], "benchmark": res["benchmark"],
+                              "holdings": res["holdings"]})
+        written = safe_to_csv(curve, a.out, index=True)
         if len(res["picks"]):
-            res["picks"].to_csv(a.out.replace(".csv", "_picks.csv"),
-                                index=False, encoding="utf-8-sig")
-        print(f"已写出 {a.out}")
-        report_rebalance(res, p_rb)
+            safe_to_csv(res["picks"], a.out.replace(".csv", "_picks.csv"))
+        if written:
+            print(f"\n已写出 {written}")
         return 0
 
     res = simulate(bars_by_code, sigs, p_port, scores, oks)
-    pd.DataFrame({"equity": res["equity"], "benchmark": res["benchmark"],
-                  "holdings": res["holdings"]}).to_csv(a.out, encoding="utf-8-sig")
+    report(res, p_port)                      # 先出报告,再落盘
+    curve = pd.DataFrame({"equity": res["equity"], "benchmark": res["benchmark"],
+                          "holdings": res["holdings"]})
+    written = safe_to_csv(curve, a.out, index=True)
     if len(res["trades"]):
-        res["trades"].to_csv(a.out.replace(".csv", "_trades.csv"),
-                             index=False, encoding="utf-8-sig")
-    print(f"已写出 {a.out}")
-    report(res, p_port)
+        safe_to_csv(res["trades"], a.out.replace(".csv", "_trades.csv"))
+    if written:
+        print(f"\n已写出 {written}")
     return 0
 
 

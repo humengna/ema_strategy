@@ -36,6 +36,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ema_strategy import feed                                   # noqa: E402
+from ema_strategy.io_utils import safe_to_csv                   # noqa: E402
 from ema_strategy.bull import BullParams                        # noqa: E402
 from ema_strategy.bull import run as bull_run                   # noqa: E402
 from ema_strategy.sequence import Params as SeqParams           # noqa: E402
@@ -289,14 +290,7 @@ def main(argv=None) -> int:
     bench = {h: pd.concat(d.values(), axis=1).mean(axis=1) if d else pd.Series(dtype=float)
              for h, d in fwd_by_code.items()}
 
-    events.to_csv(a.out, index=False, encoding="utf-8-sig")
-    print(f"已写出 {a.out}({len(events)} 行,每条信号一行)")
-
     by_date = daily_table(events, holds)
-    if len(by_date):
-        path = a.out.replace(".csv", "_by_date.csv")
-        by_date.to_csv(path, encoding="utf-8-sig")
-        print(f"已写出 {path}({len(by_date)} 个选股日)")
 
     if a.no_flow:
         print("\n注意:--no-flow 已忽略资金流条件,以下结果不代表完整策略。")
@@ -309,6 +303,15 @@ def main(argv=None) -> int:
         show["股票"] = show["股票"].str.slice(0, 60)
         cols = ["选出只数", "股票"] + [f"ret_{h}d" for h in holds if f"ret_{h}d" in show.columns]
         print(show[cols].to_string())
+
+    # 报告已完整输出,最后才落盘 —— 文件被占用也不至于丢掉全部计算
+    written = safe_to_csv(events, a.out)
+    if written:
+        print(f"\n已写出 {written}({len(events)} 行,每条信号一行)")
+    if len(by_date):
+        path = safe_to_csv(by_date, a.out.replace(".csv", "_by_date.csv"), index=True)
+        if path:
+            print(f"已写出 {path}({len(by_date)} 个选股日)")
     return 0
 
 

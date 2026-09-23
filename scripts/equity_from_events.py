@@ -28,10 +28,15 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 import numpy as np
 import pandas as pd
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from ema_strategy.io_utils import safe_to_csv                   # noqa: E402
 
 TRADING_DAYS_PER_YEAR = 242
 
@@ -145,10 +150,11 @@ def main(argv=None) -> int:
 
     ev = load_events(a.events_csv, a.hold)
     p = period_series(ev, a.hold, a.cost, strict)
+    report(p, a.hold, a.cost, strict, a.events_csv)   # 先出报告,再落盘
     if a.out:
-        p.to_csv(a.out, index=False, encoding="utf-8-sig")
-        print(f"已写出 {a.out}")
-    report(p, a.hold, a.cost, strict, a.events_csv)
+        written = safe_to_csv(p, a.out)
+        if written:
+            print(f"\n已写出 {written}")
     return 0
 
 
