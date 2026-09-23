@@ -28,6 +28,7 @@ import argparse
 import glob
 import os
 import sys
+import time
 
 import numpy as np
 import pandas as pd
@@ -246,9 +247,11 @@ def main(argv=None) -> int:
             codes = codes[:a.limit]
         print(f"标的 {len(codes)} 只 | 策略 {a.strategy} | "
               f"持有 {'/'.join(str(h) for h in holds)} 日")
+        print("跳过下载,直接读 QMT 本地缓存" if a.no_download
+              else "将下载缺失的历史数据(首次较慢;数据已下过可加 --no-download)")
+        t_start = time.perf_counter()
         for i in range(0, len(codes), 200):
             chunk = codes[i:i + 200]
-            print(f"  [{i + len(chunk)}/{len(codes)}] ...", flush=True)
             try:
                 data = feed.fetch_daily(chunk, a.start, a.end,
                                         download=not a.no_download)
@@ -261,6 +264,11 @@ def main(argv=None) -> int:
             floats = feed.fetch_float_shares(chunk) if a.strategy == "bull" else {}
             for code, bars in data.items():
                 handle(code, bars, floats.get(code, 0.0), flows.get(code))
+            done = i + len(chunk)
+            elapsed = time.perf_counter() - t_start
+            eta = elapsed / done * (len(codes) - done)
+            print(f"  [{done}/{len(codes)}] 已用 {elapsed / 60:.1f}min,"
+                  f"预计还需 {eta / 60:.1f}min", flush=True)
 
     if a.strategy == "bull" and no_flow_count:
         print(f"\n跳过 {no_flow_count} 只:无资金流数据。"
