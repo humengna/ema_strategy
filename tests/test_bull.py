@@ -132,3 +132,22 @@ def test_profit_threshold_is_strict():
     """获利筹码要求「大于」90%,恰好等于不算。"""
     p = BullParams(profit_min=0.90)
     assert not (0.90 > p.profit_min)
+
+
+def test_whole_pipeline_has_no_lookahead(bars, flow):
+    """整条管线(形态/筹码/放量/资金流)的逐日取值不得依赖未来数据。
+
+    回测为了效率会对全历史跑一次 run() 再取触发日,
+    这只有在管线完全因果时才等价于逐日滚动。
+    """
+    full = run(bars, FLOAT, flow, P)["daily"]
+    for cut in (400, 900, 1500):
+        trunc = run(bars.iloc[:cut], FLOAT, flow.iloc[:cut], P)["daily"]
+        for col in ("profit_ratio", "net_inflow", "active", "triggered"):
+            a = full[col].iloc[:cut].to_numpy()
+            b = trunc[col].to_numpy()
+            if a.dtype == bool:
+                assert (a == b).all(), f"{col} 在截断到 {cut} 后发生变化"
+            else:
+                assert np.allclose(a.astype(float), b.astype(float), equal_nan=True), \
+                    f"{col} 在截断到 {cut} 后发生变化"
