@@ -84,6 +84,13 @@ def explain(code: str, bars: pd.DataFrame, float_shares: float,
          if active else ("MA5或MA10已跌破MA30,形态破坏" if broken else "尚无有效形态")))
 
     lines.append("  --- 触发条件 ---")
+    if p.require_ma_up:
+        d1 = daily.iloc[-2] if len(daily) > 1 else last
+        row("三条均线均向上", bool(last["ma_up"]),
+            f"MA5 {last['ma_f']:.3f}/{d1['ma_f']:.3f}  "
+            f"MA10 {last['ma_m']:.3f}/{d1['ma_m']:.3f}  "
+            f"MA30 {last['ma_s']:.3f}/{d1['ma_s']:.3f}(当日/前一日)")
+
     pr = last["profit_ratio"]
     row(f"获利筹码 > {p.profit_min:.0%}", bool(last["cond_profit"]),
         f"获利筹码 = {pr:.1%}" if pd.notna(pr) else "获利筹码无法计算(缺流通股本或数据不足)")

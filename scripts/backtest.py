@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
-"""选股效果回测:触发日次日开盘买入,持有 N 个交易日后收盘卖出。
+"""选股效果回测:输出每日选股明细,并计算多个持有期的收益。
 
-    python scripts/backtest.py --strategy bull --start 20240101 --end 20260904 --hold 5
-    python scripts/backtest.py --strategy cross --hold 5 --sector 沪深300 --limit 200
-    python scripts/backtest.py --strategy bull --csv-dir data --hold 5    # 本地CSV,不依赖 QMT
+    python scripts/backtest.py --strategy bull --start 20240101 --end 20260904
+    python scripts/backtest.py --strategy bull --sector 沪深A股 --holds 1,3,5,7,10,15,30
+    python scripts/backtest.py --strategy bull --csv-dir data    # 本地CSV,不依赖 QMT
+
+输出两份文件:
+    <out>              每条信号一行:代码、选股日期、各持有期收益、是否可成交
+    <out>_by_date.csv  按选股日汇总:当日选出几只、各持有期平均收益
 
 判断标准
     绝对收益不足以说明问题 —— 牛市里 +2% 是跑输。本脚本以「同期全市场等权平均」
@@ -14,6 +18,9 @@
     买入  触发日的次日开盘(A股 T+1)。次日开盘一字涨停视为买不进,剔除。
     卖出  买入后第 N 个交易日收盘。
     成本  默认往返 0.3%(印花税+佣金+冲击),--cost 可调。
+
+注意 持有1天 = 次日开盘买入、当日收盘卖出,即 T+0,A股不可执行。
+    仍会计算(便于观察日内动量),但报告中标注为不可执行,不应据此下单。
 """
 from __future__ import annotations
 
@@ -63,30 +70,36 @@ def signals_for(code: str, bars: pd.DataFrame, strategy: str,
     return res["daily"]["triggered"]
 
 
-def collect(code: str, bars: pd.DataFrame, strategy: str, hold: int,
+def collect(code: str, bars: pd.DataFrame, strategy: str, holds: list,
             float_shares: float, flow, p_bull: BullParams,
-            p_seq: SeqParams) -> tuple[pd.DataFrame, pd.Series]:
-    """返回(该股触发事件, 该股逐日前瞻收益)。后者用于构造全市场基准。"""
-    warmup = p_bull.warmup if strategy == "bull" else p_seq.warmup
-    if len(bars) < warmup + hold + 2:
-        return pd.DataFrame(), pd.Series(dtype=float)
+            p_seq: SeqParams) -> tuple[pd.DataFrame, dict]:
+    """返回(该股触发事件含各持有期收益, {持有期: 逐日前瞻收益})。
 
-    fwd = forward_return(bars, hold)
+    后者用于构造全市场等权基准。
+    """
+    warmup = p_bull.warmup if strategy == "bull" else p_seq.warmup
+    if len(bars) < warmup + max(holds) + 2:
+        return pd.DataFrame(), {}
+
+    fwds = {h: forward_return(bars, h) for h in holds}
     trig = signals_for(code, bars, strategy, float_shares, flow, p_bull, p_seq)
     ok = entry_tradable(bars, code)
 
-    hit = trig & fwd.notna()
-    events = pd.DataFrame({
-        "code": code, "signal_date": bars.index[hit],
-        "ret": fwd[hit].to_numpy(), "tradable": ok[hit].to_numpy(),
-    })
-    return events, fwd
+    hit = trig.reindex(bars.index).fillna(False).astype(bool)
+    if not hit.any():
+        return pd.DataFrame(), fwds
+
+    events = pd.DataFrame({"code": code, "signal_date": bars.index[hit],
+                           "tradable": ok[hit].to_numpy()})
+    for h in holds:
+        events[f"ret_{h}d"] = fwds[h][hit].to_numpy()
+    return events, fwds
 
 
 MIN_UNIVERSE = 30      # 少于这个数量,「全市场等权平均」不构成有效基准
 
 
-def summarize(events: pd.DataFrame, bench: pd.Series, hold: int, cost: float,
+def summarize(events: pd.DataFrame, bench: dict, holds: list, cost: float,
               universe_size: int = 0) -> None:
     if not len(events):
         print("没有产生任何信号")
@@ -94,65 +107,82 @@ def summarize(events: pd.DataFrame, bench: pd.Series, hold: int, cost: float,
 
     blocked = int((~events["tradable"]).sum())
     ev = events[events["tradable"]].copy()
-    print(f"\n{'=' * 64}")
+    print(f"\n{'=' * 78}")
     print(f"触发 {len(events)} 次 | 次日一字涨停买不进 {blocked} 次 | 可成交 {len(ev)} 次")
     if not len(ev):
         print("可成交样本为 0")
         return
 
-    ev["bench"] = ev["signal_date"].map(bench)
-    ev["excess"] = ev["ret"] - ev["bench"]
-    ev["net"] = ev["ret"] - cost
-
-    n_codes = ev["code"].nunique()
-    n_days = ev["signal_date"].nunique()
-    print(f"涉及 {n_codes} 只股票、{n_days} 个交易日 "
+    print(f"涉及 {ev['code'].nunique()} 只股票、{ev['signal_date'].nunique()} 个交易日 "
           f"({ev['signal_date'].min().date()} ~ {ev['signal_date'].max().date()})")
 
-    r, x, net = ev["ret"], ev["excess"], ev["net"]
-    print(f"\n--- 持有{hold}日(次日开盘买入,第{hold}日收盘卖出)---")
-    print(f"  毛收益   平均 {r.mean():+.2%}  中位 {r.median():+.2%}  "
-          f"胜率 {(r > 0).mean():.1%}  标准差 {r.std():.2%}")
-    print(f"  扣成本后 平均 {net.mean():+.2%}  中位 {net.median():+.2%}  "
-          f"胜率 {(net > 0).mean():.1%}   (往返成本 {cost:.2%})")
     if 0 < universe_size < MIN_UNIVERSE:
         print(f"\n  [警告] 股票池只有 {universe_size} 只,「全市场等权平均」基准无意义 —— "
               f"等于拿这几只自己跟自己比。\n"
-              f"         超额收益一栏不可据此判断策略效果,请至少用 {MIN_UNIVERSE} 只以上"
-              f"(如 --sector 沪深300)重跑。")
+              f"         超额一栏不可据此判断效果,请至少用 {MIN_UNIVERSE} 只以上重跑。")
 
-    valid = x.notna()
-    if valid.any():
-        xv = x[valid]
-        se = xv.std() / np.sqrt(len(xv)) if len(xv) > 1 else np.nan
-        t = xv.mean() / se if se and se > 0 else np.nan
-        print(f"\n--- 对比同期全市场等权平均 ---")
-        print(f"  同期基准 平均 {ev['bench'][valid].mean():+.2%}")
-        print(f"  超额收益 平均 {xv.mean():+.2%}  中位 {xv.median():+.2%}  "
-              f"跑赢比例 {(xv > 0).mean():.1%}")
-        print(f"  t 值 {t:.2f}  (样本 {len(xv)};|t|<2 说明超额与 0 无法区分)")
+    print(f"\n--- 各持有期收益(次日开盘买入,第N日收盘卖出;成本 {cost:.2%})---")
+    head = (f"{'持有':>6}{'样本':>7}{'平均':>9}{'中位':>9}{'胜率':>8}"
+            f"{'扣成本后':>10}{'同期基准':>10}{'超额':>9}{'跑赢':>8}{'t值':>7}")
+    print(head)
+    print("-" * len(head))
+    for h in holds:
+        col = f"ret_{h}d"
+        r = ev[col].dropna()
+        if not len(r):
+            continue
+        b = ev["signal_date"].map(bench[h])
+        x = (ev[col] - b).dropna()
+        se = x.std() / np.sqrt(len(x)) if len(x) > 1 else np.nan
+        t = x.mean() / se if se and se > 0 else np.nan
+        tag = " *" if h == 1 else ""
+        print(f"{str(h) + '日' + tag:>6}{len(r):>7}{r.mean():>9.2%}{r.median():>9.2%}"
+              f"{(r > 0).mean():>8.1%}{r.mean() - cost:>10.2%}"
+              f"{b.mean():>10.2%}{x.mean():>9.2%}{(x > 0).mean():>8.1%}{t:>7.2f}")
+    if 1 in holds:
+        print("  * 持有1日 = 次日开盘买、当日收盘卖 = T+0,A股不可执行,仅供观察日内动量")
+    print("  |t| < 2 表示超额与 0 无法区分,无论平均收益多好看")
 
-    print(f"\n--- 分布 ---")
-    q = r.quantile([0.05, 0.25, 0.5, 0.75, 0.95])
-    print(f"  5% {q[0.05]:+.2%} | 25% {q[0.25]:+.2%} | 50% {q[0.5]:+.2%} "
-          f"| 75% {q[0.75]:+.2%} | 95% {q[0.95]:+.2%}")
-    print(f"  最好 {r.max():+.2%}  最差 {r.min():+.2%}")
-    top = r.nlargest(max(1, len(r) // 20))
-    print(f"  最好 5% 的 {len(top)} 笔贡献总收益的 "
-          f"{top.sum() / r.sum():.0%}" if r.sum() != 0 else "")
+    main_h = 5 if 5 in holds else holds[0]
+    col = f"ret_{main_h}d"
+    r = ev[col].dropna()
+    if len(r):
+        q = r.quantile([0.05, 0.25, 0.5, 0.75, 0.95])
+        print(f"\n--- 持有{main_h}日的收益分布 ---")
+        print(f"  5% {q[0.05]:+.2%} | 25% {q[0.25]:+.2%} | 50% {q[0.5]:+.2%} "
+              f"| 75% {q[0.75]:+.2%} | 95% {q[0.95]:+.2%}")
+        print(f"  最好 {r.max():+.2%}  最差 {r.min():+.2%}")
+        if r.sum() != 0:
+            top = r.nlargest(max(1, len(r) // 20))
+            print(f"  最好 5% 的 {len(top)} 笔贡献总收益的 {top.sum() / r.sum():.0%}")
 
-    ev["month"] = ev["signal_date"].dt.to_period("M")
-    by_month = ev.groupby("month").agg(
-        次数=("ret", "size"), 毛收益=("ret", "mean"),
-        超额=("excess", "mean"), 胜率=("ret", lambda s: (s > 0).mean())).round(4)
-    if len(by_month) > 1:
-        print(f"\n--- 按月(检查是否集中在某段行情)---\n{by_month.to_string()}")
+        ev = ev.copy()
+        ev["month"] = ev["signal_date"].dt.to_period("M")
+        by_month = ev.groupby("month").agg(
+            选出只数=("code", "size"), 平均收益=(col, "mean"),
+            胜率=(col, lambda s: (s > 0).mean())).round(4)
+        if len(by_month) > 1:
+            print(f"\n--- 按月(持有{main_h}日)---\n{by_month.to_string()}")
+
+
+def daily_table(events: pd.DataFrame, holds: list) -> pd.DataFrame:
+    """按选股日汇总:当日选出几只、各持有期平均收益。"""
+    ev = events[events["tradable"]]
+    if not len(ev):
+        return pd.DataFrame()
+    agg = {"选出只数": ("code", "size")}
+    for h in holds:
+        agg[f"ret_{h}d"] = (f"ret_{h}d", "mean")
+    out = ev.groupby("signal_date").agg(**agg)
+    out.insert(1, "股票", ev.groupby("signal_date")["code"].apply(lambda s: ",".join(sorted(s))))
+    return out
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--strategy", default="bull", choices=["bull", "cross"])
-    ap.add_argument("--hold", type=int, default=5, help="持有交易日数")
+    ap.add_argument("--holds", default="1,3,5,7,10,15,30",
+                    help="持有交易日数,逗号分隔。1日为T+0不可执行,仅供观察")
     ap.add_argument("--start", default="20240101")
     ap.add_argument("--end", default="")
     ap.add_argument("--codes", default="")
@@ -169,11 +199,16 @@ def main(argv=None) -> int:
     ap.add_argument("--out", default="backtest_events.csv")
     a = ap.parse_args(argv)
 
+    holds = sorted({int(x) for x in a.holds.split(",") if x.strip()})
+    if not holds:
+        print("--holds 不能为空", file=sys.stderr)
+        return 2
+
     p_seq = SeqParams()
     p_bull = BullParams(seq=p_seq, profit_min=a.profit_min,
                         volume_ratio=a.volume_ratio, volume_window=a.volume_window)
 
-    all_events, fwd_by_code = [], {}
+    all_events, fwd_by_code = [], {h: {} for h in holds}
     no_flow_count = 0
 
     def handle(code: str, bars: pd.DataFrame, float_shares: float, flow) -> None:
@@ -185,11 +220,12 @@ def main(argv=None) -> int:
             # 用恒正的占位资金流,等价于跳过该条件
             flow = pd.DataFrame({"bidMostAmount": 1.0, "offMostAmount": 0.0},
                                 index=bars.index)
-        ev, fwd = collect(code, bars, a.strategy, a.hold, float_shares, flow, p_bull, p_seq)
+        ev, fwds = collect(code, bars, a.strategy, holds, float_shares, flow, p_bull, p_seq)
         if len(ev):
             all_events.append(ev)
-        if len(fwd):
-            fwd_by_code[code] = fwd
+        for h, series in fwds.items():
+            if len(series):
+                fwd_by_code[h][code] = series
 
     if a.csv_dir:
         for path in sorted(glob.glob(os.path.join(a.csv_dir, "*.csv"))):
@@ -230,15 +266,32 @@ def main(argv=None) -> int:
         print("没有产生任何信号")
         return 1
 
-    events = pd.concat(all_events, ignore_index=True)
+    events = pd.concat(all_events, ignore_index=True).sort_values(
+        ["signal_date", "code"]).reset_index(drop=True)
     # 全市场等权基准:每个买入日,全部标的同口径 N 日收益的均值
-    bench = pd.concat(fwd_by_code.values(), axis=1).mean(axis=1)
+    bench = {h: pd.concat(d.values(), axis=1).mean(axis=1) if d else pd.Series(dtype=float)
+             for h, d in fwd_by_code.items()}
 
     events.to_csv(a.out, index=False, encoding="utf-8-sig")
-    print(f"已写出 {a.out}({len(events)} 行)")
+    print(f"已写出 {a.out}({len(events)} 行,每条信号一行)")
+
+    by_date = daily_table(events, holds)
+    if len(by_date):
+        path = a.out.replace(".csv", "_by_date.csv")
+        by_date.to_csv(path, encoding="utf-8-sig")
+        print(f"已写出 {path}({len(by_date)} 个选股日)")
+
     if a.no_flow:
         print("\n注意:--no-flow 已忽略资金流条件,以下结果不代表完整策略。")
-    summarize(events, bench, a.hold, a.cost, universe_size=len(fwd_by_code))
+    universe = len(fwd_by_code[holds[0]])
+    summarize(events, bench, holds, a.cost, universe_size=universe)
+
+    if len(by_date):
+        print(f"\n--- 最近 10 个选股日 ---")
+        show = by_date.tail(10).copy()
+        show["股票"] = show["股票"].str.slice(0, 60)
+        cols = ["选出只数", "股票"] + [f"ret_{h}d" for h in holds if f"ret_{h}d" in show.columns]
+        print(show[cols].to_string())
     return 0
 
 

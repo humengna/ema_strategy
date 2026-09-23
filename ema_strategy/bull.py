@@ -9,9 +9,10 @@
     启动后,MA5 或 MA10 任一跌破 MA30,形态即告破坏,当日起不再维持。
 
 触发条件(形态维持期间,当日须同时满足)
-    1. 获利筹码 > 90%          —— 自行计算,见 chips.py
-    2. 当日资金流入            —— bidMostAmount - offMostAmount > 0
-    3. 放量                    —— 成交量 > 前 N 日均量 * ratio
+    1. 三条均线均向上          —— MA5、MA10、MA30 当日均较前一日上行
+    2. 获利筹码 > 90%          —— 自行计算,见 chips.py
+    3. 当日资金流入            —— bidMostAmount - offMostAmount > 0
+    4. 放量                    —— 成交量 > 前 N 日均量 * ratio
 
 规则未定义、本实现的约定(均可在 BullParams 调整):
   · 「放量」的口径:默认 成交量 > 前5日均量 * 1.5(不含当日,避免自我参照)
@@ -33,6 +34,7 @@ from .sequence import find_sequences, prepare
 @dataclass(frozen=True)
 class BullParams:
     seq: SeqParams = field(default_factory=SeqParams)
+    require_ma_up: bool = True     # 三条均线当日是否须全部上行
     profit_min: float = 0.90       # 获利筹码下限(严格大于)
     volume_ratio: float = 1.5      # 放量倍数
     volume_window: int = 5         # 均量窗口(不含当日)
@@ -74,6 +76,18 @@ def pattern_state(daily: pd.DataFrame, sequences: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame({"active": active, "pattern_id": pid,
                          "pattern_start": start_of, "days_in_pattern": days_in},
                         index=index)
+
+
+def all_ma_rising(daily: pd.DataFrame) -> pd.Series:
+    """三条均线当日是否均较前一日上行。
+
+    与要点9(只要求 MA30 上行)不同,这里要求 MA5/MA10/MA30 同时上行,
+    是更强的趋势确认。均线为 NaN 的预热期一律判 False。
+    """
+    cols = ("ma_f", "ma_m", "ma_s")
+    rising = [(daily[c] > daily[c].shift(1)) & daily[c].notna() & daily[c].shift(1).notna()
+              for c in cols]
+    return rising[0] & rising[1] & rising[2]
 
 
 def volume_surge(volume: pd.Series, window: int, ratio: float) -> pd.Series:
@@ -122,11 +136,13 @@ def run(bars: pd.DataFrame, float_shares: float | pd.Series,
     daily["net_inflow"] = net_inflow(flow, daily.index)
     daily["vol_surge"] = volume_surge(bars["volume"], p.volume_window, p.volume_ratio)
 
+    daily["ma_up"] = all_ma_rising(daily)
+    daily["cond_ma_up"] = daily["ma_up"] if p.require_ma_up else True
     daily["cond_profit"] = daily["profit_ratio"] > p.profit_min
     daily["cond_inflow"] = daily["net_inflow"] > 0
     daily["cond_volume"] = daily["vol_surge"]
     daily = pd.concat([daily, state], axis=1)
 
-    daily["triggered"] = (daily["active"] & daily["cond_profit"]
+    daily["triggered"] = (daily["active"] & daily["cond_ma_up"] & daily["cond_profit"]
                           & daily["cond_inflow"] & daily["cond_volume"])
     return {"daily": daily, "sequences": sequences, "params": p}

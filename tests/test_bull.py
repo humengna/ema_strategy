@@ -151,3 +151,43 @@ def test_whole_pipeline_has_no_lookahead(bars, flow):
             else:
                 assert np.allclose(a.astype(float), b.astype(float), equal_nan=True), \
                     f"{col} 在截断到 {cut} 后发生变化"
+
+
+def test_all_ma_rising_requires_all_three():
+    """三条均线必须同时上行,任一走平或下行都不算。"""
+    from ema_strategy.bull import all_ma_rising
+    idx = pd.bdate_range("2024-01-01", periods=2)
+    cases = {
+        (1.0, 1.0, 1.0): True,      # 三条都涨
+        (1.0, 1.0, 0.0): False,     # MA30 走平
+        (1.0, -1.0, 1.0): False,    # MA10 下行
+        (0.0, 1.0, 1.0): False,     # MA5 走平
+    }
+    for (df_, dm, ds), expected in cases.items():
+        daily = pd.DataFrame({"ma_f": [10.0, 10.0 + df_], "ma_m": [10.0, 10.0 + dm],
+                              "ma_s": [10.0, 10.0 + ds]}, index=idx)
+        assert bool(all_ma_rising(daily).iloc[-1]) is expected
+
+
+def test_ma_rising_false_during_warmup():
+    from ema_strategy.bull import all_ma_rising
+    idx = pd.bdate_range("2024-01-01", periods=3)
+    daily = pd.DataFrame({"ma_f": [np.nan, 1.0, 2.0], "ma_m": [np.nan, 1.0, 2.0],
+                          "ma_s": [np.nan, 1.0, 2.0]}, index=idx)
+    assert not all_ma_rising(daily).iloc[1]     # 前值为 NaN
+    assert all_ma_rising(daily).iloc[2]
+
+
+def test_ma_up_condition_only_narrows(bars, flow):
+    """新增条件只会减少触发,不会凭空多出信号。"""
+    loose = run(bars, FLOAT, flow, BullParams(require_ma_up=False))["daily"]
+    strict = run(bars, FLOAT, flow, BullParams(require_ma_up=True))["daily"]
+    assert strict["triggered"].sum() <= loose["triggered"].sum()
+    assert not (strict["triggered"] & ~loose["triggered"]).any()
+
+
+def test_triggered_days_have_all_ma_rising(bars, flow):
+    daily = run(bars, FLOAT, flow, BullParams(require_ma_up=True))["daily"]
+    hit = daily[daily["triggered"]]
+    if len(hit):
+        assert hit["ma_up"].all()
