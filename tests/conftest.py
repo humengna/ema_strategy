@@ -34,3 +34,18 @@ def samples() -> dict:
 @pytest.fixture(scope="session")
 def intc(samples) -> pd.DataFrame:
     return samples["INTC"]
+
+
+@pytest.fixture(scope="session")
+def intc_with_volume() -> pd.DataFrame:
+    """带真实成交量的样本,供筹码/放量相关测试使用。
+
+    成交量必须用真实数据:设成常数会让「放量」条件永远不成立,
+    测试看似通过实则什么都没验证。
+    """
+    df = pd.read_csv(os.path.join(HERE, SAMPLES["INTC"]), parse_dates=["Date"]).set_index("Date")
+    df = df.rename(columns=str.lower).sort_index()
+    out = df[["open", "high", "low", "close", "volume"]].dropna().copy()
+    out["volume"] = out["volume"] / 100.0          # 换算成「手」,与 xtdata 口径一致
+    out["amount"] = out["close"] * out["volume"] * 100
+    return out

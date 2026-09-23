@@ -199,6 +199,97 @@ def fetch_universe(sector: str = "沪深A股", exclude_st: bool = True,
     return out
 
 
+# bidMostAmount / offMostAmount 所在的周期,按优先级尝试:
+#   transactioncount1d  Level1 逐笔成交统计(日线)—— 投研版特色数据
+#   l2transactioncount  Level2 大单统计 —— 需 Level2 行情权限,盘中累计值
+# 两者都有门槛,取不到时 fetch_money_flow 返回空,由调用方显式拒绝该条件,
+# 绝不能当成「无流入」或「有流入」静默放过。
+FLOW_PERIODS = ("transactioncount1d", "l2transactioncount")
+FLOW_FIELDS = ["time", "bidMostAmount", "offMostAmount"]
+
+
+def fetch_money_flow(codes: Iterable[str], start: str, end: str,
+                     periods: Iterable[str] = FLOW_PERIODS,
+                     verbose: bool = True) -> dict:
+    """取主买/主卖特大单成交额,返回 {code: DataFrame(bidMostAmount, offMostAmount)}。
+
+    逐个周期尝试,第一个取到数据的即采用。全部失败则返回 {}。
+    l2transactioncount 是盘中累计值,按日取末值汇总为当日口径。
+    """
+    from xtquant import xtdata
+
+    codes = list(codes)
+    for period in periods:
+        try:
+            raw = xtdata.download_history_data2(codes, period=period,
+                                                start_time=start, end_time=end)
+        except Exception:
+            raw = None                            # 下载失败仍尝试直接读本地
+        try:
+            data = xtdata.get_market_data_ex(
+                FLOW_FIELDS, codes, period=period, start_time=start,
+                end_time=end, count=-1, fill_data=False) or {}
+        except Exception as exc:
+            if verbose:
+                print(f"  资金流周期 {period} 不可用: {type(exc).__name__}: {exc}",
+                      file=sys.stderr)
+            continue
+
+        out = {}
+        for code, df in data.items():
+            norm = _normalize_flow(df)
+            if norm is not None and len(norm):
+                out[code] = norm
+        if out:
+            if verbose:
+                print(f"  资金流数据源: {period}(取到 {len(out)}/{len(codes)} 只)")
+            return out
+
+    if verbose:
+        print("  未取到资金流数据(transactioncount1d 需投研版,"
+              "l2transactioncount 需Level2权限)", file=sys.stderr)
+    return {}
+
+
+def _normalize_flow(df) -> Optional[pd.DataFrame]:
+    """把资金流原始数据归整到日频:索引转日期,盘中多条则取当日末值。"""
+    if df is None or len(df) == 0:
+        return None
+    if not {"bidMostAmount", "offMostAmount"}.issubset(df.columns):
+        return None
+
+    out = df.copy()
+    idx = pd.to_datetime(out.index.astype(str).str.slice(0, 8),
+                         format="%Y%m%d", errors="coerce")
+    out.index = idx
+    out = out[out.index.notna()]
+    for col in ("bidMostAmount", "offMostAmount"):
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+    out = out[["bidMostAmount", "offMostAmount"]]
+    return out.groupby(level=0).last().sort_index()
+
+
+def fetch_float_shares(codes: Iterable[str], verbose: bool = True) -> dict:
+    """取流通股本(股),用于换手率与筹码分布。
+
+    只能取到当前值;增发/解禁前后回溯历史换手率会有偏差。
+    """
+    from xtquant import xtdata
+
+    out = {}
+    for code in codes:
+        try:
+            info = xtdata.get_instrument_detail(code)
+            value = float(info.get("FloatVolume") or 0) if info else 0.0
+            if value > 0:
+                out[code] = value
+        except Exception:
+            continue
+    if verbose and len(out) < len(list(codes)):
+        pass
+    return out
+
+
 def fetch_next_open(codes: Iterable[str], date: str) -> dict:
     """取指定交易日的开盘价,用于下单前过滤一字涨停。"""
     from xtquant import xtdata
