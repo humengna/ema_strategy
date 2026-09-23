@@ -102,3 +102,19 @@ def test_portfolio_rejects_t_plus_zero(fake_feed, tmp_path):
     rc = backtest_portfolio.main(["--strategy", "cross", "--hold", "1",
                                   "--out", str(tmp_path / "pf.csv")])
     assert rc == 2
+
+
+def test_portfolio_rebalance_mode_runs(fake_feed, tmp_path):
+    """月度调仓模式的取数路径。"""
+    out = tmp_path / "rb.csv"
+    rc = backtest_portfolio.main(["--strategy", "cross", "--mode", "rebalance",
+                                  "--freq-days", "21", "--lookback", "21",
+                                  "--max-positions", "5", "--sector", "沪深A股",
+                                  "--out", str(out)])
+    assert rc in (0, 1)
+
+
+def test_portfolio_rebalance_rejects_short_freq(fake_feed, tmp_path):
+    rc = backtest_portfolio.main(["--strategy", "cross", "--mode", "rebalance",
+                                  "--freq-days", "1", "--out", str(tmp_path / "rb.csv")])
+    assert rc == 2

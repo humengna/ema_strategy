@@ -27,6 +27,9 @@ from ema_strategy import feed                                   # noqa: E402
 from ema_strategy.bull import BullParams                        # noqa: E402
 from ema_strategy.bull import run as bull_run                   # noqa: E402
 from ema_strategy.portfolio import PortfolioParams, metrics, simulate   # noqa: E402
+from ema_strategy.rebalance import RebalanceParams                      # noqa: E402
+from ema_strategy.rebalance import report_metrics as rb_metrics         # noqa: E402
+from ema_strategy.rebalance import simulate as rb_simulate              # noqa: E402
 from ema_strategy.sequence import Params as SeqParams           # noqa: E402
 from ema_strategy.sequence import run as cross_run              # noqa: E402
 
@@ -104,10 +107,53 @@ def report(res: dict, p: PortfolioParams) -> None:
                   f"超额 {yearly[ts] - by[ts]:+7.2%}")
 
 
+def report_rebalance(res: dict, p: RebalanceParams) -> None:
+    curve, bench = res["equity"], res["benchmark"]
+    m = rb_metrics(res)
+    bm = metrics(bench, pd.DataFrame(columns=["ret"]), res["holdings"])
+
+    print(f"\n{'=' * 66}")
+    print(f"区间 {curve.index[0].date()} ~ {curve.index[-1].date()}  ({len(curve)} 个交易日)")
+    print(f"每 {p.freq_days} 个交易日整体换仓一次,期间不动 | 回看 {p.lookback} 日 | "
+          f"每期最多 {p.max_positions} 只 | 往返成本 {p.cost:.2%}")
+    print(f"共调仓 {len(res['rebalance_dates'])} 次,平均每期选出 "
+          f"{res['picks']['n'].mean():.1f} 只")
+
+    print(f"\n{'':14}{'策略':>12}{'全市场等权':>14}")
+    for key in ("总收益", "年化收益", "年化波动", "最大回撤"):
+        print(f"{key:14}{m[key]:>11.2%}{bm.get(key, float('nan')):>14.2%}")
+    for key in ("Sharpe", "Calmar"):
+        print(f"{key:14}{m[key]:>11.2f}{bm.get(key, float('nan')):>14.2f}")
+
+    print(f"\n--- 调仓期维度 ---")
+    print(f"  期数 {m.get('调仓期数', 0)}  期胜率 {m.get('期胜率', float('nan')):.1%}  "
+          f"期平均收益 {m.get('期平均收益', float('nan')):+.2%}")
+    print(f"  夏普(按期口径) {m.get('夏普(按期)', float('nan')):.2f}")
+    if m.get("调仓期数", 0) < 20:
+        print(f"  [警告] 只有 {m.get('调仓期数', 0)} 个调仓期,年化与夏普的抽样误差极大,"
+              f"不足以判定策略优劣。")
+
+    if len(curve) > 250:
+        yearly = curve.resample("YE").last().pct_change()
+        yearly.iloc[0] = curve.resample("YE").last().iloc[0] / curve.iloc[0] - 1
+        by = bench.resample("YE").last().pct_change()
+        by.iloc[0] = bench.resample("YE").last().iloc[0] / bench.iloc[0] - 1
+        print(f"\n--- 分年 ---")
+        for ts in yearly.index:
+            print(f"  {ts.year}  策略 {yearly[ts]:+7.2%}   基准 {by[ts]:+7.2%}   "
+                  f"超额 {yearly[ts] - by[ts]:+7.2%}")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--strategy", default="bull", choices=["bull", "cross"])
-    ap.add_argument("--hold", type=int, default=5, help="持有交易日数(>=2,T+1)")
+    ap.add_argument("--mode", default="rolling", choices=["rolling", "rebalance"],
+                    help="rolling=每票各自持有N天滚动;rebalance=定期整体换仓,期间不动")
+    ap.add_argument("--hold", type=int, default=5, help="[rolling] 持有交易日数(>=2,T+1)")
+    ap.add_argument("--freq-days", type=int, default=21, dest="freq_days",
+                    help="[rebalance] 调仓间隔交易日,月度约21")
+    ap.add_argument("--lookback", type=int, default=21,
+                    help="[rebalance] 信号回看窗口交易日")
     ap.add_argument("--max-positions", type=int, default=20, dest="max_positions")
     ap.add_argument("--max-new-per-day", type=int, default=0, dest="max_new_per_day")
     ap.add_argument("--capital", type=float, default=1_000_000.0)
@@ -130,6 +176,9 @@ def main(argv=None) -> int:
     p_bull = BullParams(seq=p_seq, profit_min=a.profit_min,
                         volume_ratio=a.volume_ratio, volume_window=a.volume_window)
     try:
+        p_rb = RebalanceParams(freq_days=a.freq_days, lookback=a.lookback,
+                               max_positions=a.max_positions, cost=a.cost,
+                               init_capital=a.capital)
         p_port = PortfolioParams(hold_days=a.hold, max_positions=a.max_positions,
                                  max_new_per_day=a.max_new_per_day,
                                  cost=a.cost, init_capital=a.capital)
@@ -148,7 +197,8 @@ def main(argv=None) -> int:
                 return
             flow = pd.DataFrame({"bidMostAmount": 1.0, "offMostAmount": 0.0},
                                 index=bars.index)
-        if len(bars) < (p_bull.warmup if a.strategy == "bull" else p_seq.warmup) + a.hold + 2:
+        need = a.hold if a.mode == "rolling" else a.freq_days + a.lookback
+        if len(bars) < (p_bull.warmup if a.strategy == "bull" else p_seq.warmup) + need + 2:
             return
         built = build_signals(code, bars, a.strategy, float_shares, flow, p_bull, p_seq)
         if built is None:
@@ -199,6 +249,17 @@ def main(argv=None) -> int:
 
     if a.no_flow:
         print("\n注意:--no-flow 已忽略资金流条件,以下结果不代表完整策略。")
+
+    if a.mode == "rebalance":
+        res = rb_simulate(bars_by_code, sigs, p_rb, scores)
+        pd.DataFrame({"equity": res["equity"], "benchmark": res["benchmark"],
+                      "holdings": res["holdings"]}).to_csv(a.out, encoding="utf-8-sig")
+        if len(res["picks"]):
+            res["picks"].to_csv(a.out.replace(".csv", "_picks.csv"),
+                                index=False, encoding="utf-8-sig")
+        print(f"已写出 {a.out}")
+        report_rebalance(res, p_rb)
+        return 0
 
     res = simulate(bars_by_code, sigs, p_port, scores, oks)
     pd.DataFrame({"equity": res["equity"], "benchmark": res["benchmark"],
