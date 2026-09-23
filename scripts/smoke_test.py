@@ -29,6 +29,8 @@ def main(argv=None) -> int:
     ap.add_argument("--codes", default=",".join(DEFAULT_CODES))
     ap.add_argument("--date", default="", help="选股日 YYYYMMDD,缺省用最后一个有数据的交易日")
     ap.add_argument("--start", default="")
+    ap.add_argument("--no-download", action="store_true", dest="no_download",
+                    help="跳过下载,直接读本地缓存")
     a = ap.parse_args(argv)
     codes = [c.strip() for c in a.codes.split(",") if c.strip()]
 
@@ -51,7 +53,7 @@ def main(argv=None) -> int:
     start = a.start or (pd.Timestamp(end) - pd.Timedelta(days=400)).strftime("%Y%m%d")
     print(f"  区间 {start} ~ {end},后复权,不填充停牌")
     try:
-        data = feed.fetch_daily(codes, start, end)
+        data = feed.fetch_daily(codes, start, end, download=not a.no_download)
     except Exception as exc:
         print(f"  失败: {type(exc).__name__}: {exc}")
         print("  -> 确认 QMT 客户端在运行,且该账号有日线行情权限。")

@@ -163,6 +163,8 @@ def main(argv=None) -> int:
     ap.add_argument("--codes", default="")
     ap.add_argument("--sector", default="沪深A股")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--no-download", action="store_true", dest="no_download",
+                    help="跳过下载,直接读 QMT 本地缓存(数据已下过时用,快很多)")
     ap.add_argument("--csv-dir", default="", dest="csv_dir")
     ap.add_argument("--profit-min", type=float, default=0.90, dest="profit_min")
     ap.add_argument("--volume-ratio", type=float, default=1.5, dest="volume_ratio")
@@ -226,11 +228,13 @@ def main(argv=None) -> int:
             chunk = codes[i:i + 200]
             print(f"  [{i + len(chunk)}/{len(codes)}] ...", flush=True)
             try:
-                data = feed.fetch_daily(chunk, a.start, a.end)
+                data = feed.fetch_daily(chunk, a.start, a.end,
+                                        download=not a.no_download)
             except Exception as exc:
                 print(f"    行情批次失败:{type(exc).__name__}: {exc}", file=sys.stderr)
                 continue
-            flows = (feed.fetch_money_flow(chunk, a.start, a.end, verbose=(i == 0))
+            flows = (feed.fetch_money_flow(chunk, a.start, a.end, verbose=(i == 0),
+                                           download=not a.no_download)
                      if a.strategy == "bull" and not a.no_flow else {})
             floats = feed.fetch_float_shares(chunk) if a.strategy == "bull" else {}
             for code, bars in data.items():

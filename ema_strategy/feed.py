@@ -210,7 +210,7 @@ FLOW_FIELDS = ["time", "bidMostAmount", "offMostAmount"]
 
 def fetch_money_flow(codes: Iterable[str], start: str, end: str,
                      periods: Iterable[str] = FLOW_PERIODS,
-                     verbose: bool = True) -> dict:
+                     verbose: bool = True, download: bool = True) -> dict:
     """取主买/主卖特大单成交额,返回 {code: DataFrame(bidMostAmount, offMostAmount)}。
 
     逐个周期尝试,第一个取到数据的即采用。全部失败则返回 {}。
@@ -220,11 +220,12 @@ def fetch_money_flow(codes: Iterable[str], start: str, end: str,
 
     codes = list(codes)
     for period in periods:
-        try:
-            raw = xtdata.download_history_data2(codes, period=period,
-                                                start_time=start, end_time=end)
-        except Exception:
-            raw = None                            # 下载失败仍尝试直接读本地
+        if download:
+            try:
+                xtdata.download_history_data2(codes, period=period,
+                                              start_time=start, end_time=end)
+            except Exception:
+                pass                              # 下载失败仍尝试直接读本地缓存
         try:
             data = xtdata.get_market_data_ex(
                 FLOW_FIELDS, codes, period=period, start_time=start,
