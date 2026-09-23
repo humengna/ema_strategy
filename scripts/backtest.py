@@ -194,6 +194,8 @@ def main(argv=None) -> int:
     ap.add_argument("--csv-dir", default="", dest="csv_dir",
                     help="用本地CSV代替 xtdata(文件名即代码,需含 Date/OHLC/volume)")
     ap.add_argument("--cost", type=float, default=0.003, help="往返成本,默认 0.3%%")
+    ap.add_argument("--pullback-window", type=int, default=6, dest="pullback_window")
+    ap.add_argument("--no-pullback", action="store_true", dest="no_pullback")
     ap.add_argument("--profit-min", type=float, default=0.90, dest="profit_min")
     ap.add_argument("--volume-ratio", type=float, default=1.5, dest="volume_ratio")
     ap.add_argument("--volume-window", type=int, default=5, dest="volume_window")
@@ -209,7 +211,9 @@ def main(argv=None) -> int:
 
     p_seq = SeqParams()
     p_bull = BullParams(seq=p_seq, profit_min=a.profit_min,
-                        volume_ratio=a.volume_ratio, volume_window=a.volume_window)
+                        volume_ratio=a.volume_ratio, volume_window=a.volume_window,
+                        require_pullback=not a.no_pullback,
+                        pullback_window=a.pullback_window)
 
     all_events, fwd_by_code = [], {h: {} for h in holds}
     no_flow_count = 0

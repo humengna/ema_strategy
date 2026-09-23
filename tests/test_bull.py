@@ -191,3 +191,85 @@ def test_triggered_days_have_all_ma_rising(bars, flow):
     hit = daily[daily["triggered"]]
     if len(hit):
         assert hit["ma_up"].all()
+
+
+# ---------------------------------------------------------------- 回踩判定
+def _ma_frame(low, close, ma_f, ma_m, ma_s):
+    n = len(low)
+    idx = pd.bdate_range("2024-01-01", periods=n)
+    return pd.DataFrame({"low": low, "close": close, "high": [max(c, l) for c, l in zip(close, low)],
+                         "ma_f": ma_f, "ma_m": ma_m, "ma_s": ma_s}, index=idx)
+
+
+def test_pullback_same_day_break_and_recover():
+    """下影线跌破 MA30、收盘站回 —— 同日即算一次回踩。"""
+    from ema_strategy.bull import pullback_days
+    d = _ma_frame(low=[10.0, 9.0], close=[10.5, 10.2],
+                  ma_f=[11.0, 11.0], ma_m=[10.5, 10.5], ma_s=[10.0, 10.0])
+    assert pullback_days(d).tolist() == [False, True]
+
+
+def test_pullback_across_days():
+    """先跌破、数日后才收复 —— 收复当天算回踩。"""
+    from ema_strategy.bull import pullback_days
+    d = _ma_frame(low=[9.0, 9.2, 9.5], close=[9.5, 9.8, 10.3],
+                  ma_f=[11.0] * 3, ma_m=[10.5] * 3, ma_s=[10.0] * 3)
+    assert pullback_days(d).tolist() == [False, False, True]
+
+
+def test_pullback_needs_a_break_first():
+    """没有跌破就没有回踩,单纯站在 MA30 上方不算。"""
+    from ema_strategy.bull import pullback_days
+    d = _ma_frame(low=[10.5, 10.6], close=[11.0, 11.2],
+                  ma_f=[11.5] * 2, ma_m=[11.0] * 2, ma_s=[10.0] * 2)
+    assert not pullback_days(d).any()
+
+
+def test_pullback_voided_when_pattern_breaks():
+    """跌破到收复期间 MA5 或 MA10 跌穿 MA30,该次回踩作废。"""
+    from ema_strategy.bull import pullback_days
+    # 第3天的最低价须在 MA30 之上,否则它自身又构成一次合法的同日回踩
+    d = _ma_frame(low=[9.0, 9.2, 10.1], close=[9.5, 9.8, 10.5],
+                  ma_f=[11.0, 9.5, 11.0],        # 第2天 MA5 跌破 MA30,回踩作废
+                  ma_m=[10.5] * 3, ma_s=[10.0] * 3)
+    assert not pullback_days(d).any()
+
+
+def test_one_break_yields_one_pullback():
+    """一次跌破只对应一次回踩,收复后需重新跌破才有下一次。"""
+    from ema_strategy.bull import pullback_days
+    d = _ma_frame(low=[9.0, 10.5, 10.6, 9.0], close=[10.3, 11.0, 11.1, 10.4],
+                  ma_f=[11.5] * 4, ma_m=[11.0] * 4, ma_s=[10.0] * 4)
+    assert pullback_days(d).tolist() == [True, False, False, True]
+
+
+def test_recent_pullback_window():
+    """窗口含当日:window=3 覆盖当日与前两日。"""
+    from ema_strategy.bull import recent_pullback
+    d = _ma_frame(low=[9.0, 10.5, 10.6, 10.7, 10.8],
+                  close=[10.3, 11.0, 11.1, 11.2, 11.3],
+                  ma_f=[11.5] * 5, ma_m=[11.0] * 5, ma_s=[10.0] * 5)
+    assert recent_pullback(d, window=3).tolist() == [True, True, True, False, False]
+
+
+def test_recent_pullback_reset_on_break():
+    """形态一旦破坏,此前的回踩不再计数。"""
+    from ema_strategy.bull import recent_pullback
+    d = _ma_frame(low=[9.0, 10.5, 10.6], close=[10.3, 11.0, 11.1],
+                  ma_f=[11.5, 9.0, 11.5],        # 第2天形态破坏
+                  ma_m=[11.0] * 3, ma_s=[10.0] * 3)
+    assert recent_pullback(d, window=6).tolist() == [True, False, False]
+
+
+def test_pullback_condition_only_narrows(bars, flow):
+    loose = run(bars, FLOAT, flow, BullParams(require_pullback=False))["daily"]
+    strict = run(bars, FLOAT, flow, BullParams(require_pullback=True))["daily"]
+    assert strict["triggered"].sum() <= loose["triggered"].sum()
+    assert not (strict["triggered"] & ~loose["triggered"]).any()
+
+
+def test_triggered_days_have_recent_pullback(bars, flow):
+    daily = run(bars, FLOAT, flow, BullParams(require_pullback=True))["daily"]
+    hit = daily[daily["triggered"]]
+    if len(hit):
+        assert hit["recent_pullback"].all()

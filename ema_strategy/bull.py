@@ -8,7 +8,14 @@
 形态破坏
     启动后,MA5 或 MA10 任一跌破 MA30,形态即告破坏,当日起不再维持。
 
+回踩
+    最低价跌破 MA30,其后首个收盘站回 MA30 的交易日即为回踩日。
+    跌破与收复可以是同一天(下影线破、收盘收回),也可以跨若干天。
+    整个跌破~收复过程中,MA5 与 MA10 须始终不低于 MA30(形态未破坏),
+    否则该次回踩作废。
+
 触发条件(形态维持期间,当日须同时满足)
+    0. 近 N 个交易日内有过回踩,且自回踩以来形态未破坏(N 默认 6,含当日)
     1. 三条均线均向上          —— MA5、MA10、MA30 当日均较前一日上行
     2. 获利筹码 > 90%          —— 自行计算,见 chips.py
     3. 当日资金流入            —— bidMostAmount - offMostAmount > 0
@@ -34,6 +41,8 @@ from .sequence import find_sequences, prepare
 @dataclass(frozen=True)
 class BullParams:
     seq: SeqParams = field(default_factory=SeqParams)
+    require_pullback: bool = True  # 是否要求近期有过回踩
+    pullback_window: int = 6       # 回踩需发生在近 N 个交易日内(含当日)
     require_ma_up: bool = True     # 三条均线当日是否须全部上行
     profit_min: float = 0.90       # 获利筹码下限(严格大于)
     volume_ratio: float = 1.5      # 放量倍数
@@ -76,6 +85,52 @@ def pattern_state(daily: pd.DataFrame, sequences: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame({"active": active, "pattern_id": pid,
                          "pattern_start": start_of, "days_in_pattern": days_in},
                         index=index)
+
+
+def pullback_days(daily: pd.DataFrame) -> pd.Series:
+    """标出回踩日:最低价跌破 MA30 后,首个收盘站回 MA30 的那一天。
+
+    · 跌破与收复同日(下影线破、收盘收回)同样算一次回踩
+    · 跌破到收复期间,MA5 与 MA10 任一跌破 MA30 即形态破坏,该次回踩作废
+    · 一次跌破只对应一次回踩,收复后重新等待下一次跌破
+    """
+    below = (daily["low"] < daily["ma_s"]).to_numpy()
+    recovered = (daily["close"] >= daily["ma_s"]).to_numpy()
+    intact = ((daily["ma_f"] >= daily["ma_s"])
+              & (daily["ma_m"] >= daily["ma_s"])).to_numpy()
+    valid = daily[["ma_f", "ma_m", "ma_s"]].notna().all(axis=1).to_numpy()
+
+    out = np.zeros(len(daily), dtype=bool)
+    pending = False
+    for i in range(len(daily)):
+        if not valid[i] or not intact[i]:
+            pending = False            # 形态破坏或均线未就绪 -> 本次回踩作废
+            continue
+        if below[i]:
+            pending = True             # 先记跌破,同日即可判收复
+        if pending and recovered[i]:
+            out[i] = True
+            pending = False
+    return pd.Series(out, index=daily.index, name="pullback_day")
+
+
+def recent_pullback(daily: pd.DataFrame, window: int) -> pd.Series:
+    """近 window 个交易日内(含当日)有过回踩,且自回踩以来形态未破坏。"""
+    pb = pullback_days(daily).to_numpy()
+    intact = ((daily["ma_f"] >= daily["ma_s"])
+              & (daily["ma_m"] >= daily["ma_s"])).to_numpy()
+
+    out = np.zeros(len(daily), dtype=bool)
+    last = -1
+    for i in range(len(daily)):
+        if not intact[i]:
+            last = -1                  # 形态一旦破坏,之前的回踩不再计数
+            continue
+        if pb[i]:
+            last = i
+        if last >= 0 and (i - last) < window:
+            out[i] = True
+    return pd.Series(out, index=daily.index, name="recent_pullback")
 
 
 def all_ma_rising(daily: pd.DataFrame) -> pd.Series:
@@ -136,6 +191,9 @@ def run(bars: pd.DataFrame, float_shares: float | pd.Series,
     daily["net_inflow"] = net_inflow(flow, daily.index)
     daily["vol_surge"] = volume_surge(bars["volume"], p.volume_window, p.volume_ratio)
 
+    daily["pullback_day"] = pullback_days(daily)
+    daily["recent_pullback"] = recent_pullback(daily, p.pullback_window)
+    daily["cond_pullback"] = daily["recent_pullback"] if p.require_pullback else True
     daily["ma_up"] = all_ma_rising(daily)
     daily["cond_ma_up"] = daily["ma_up"] if p.require_ma_up else True
     daily["cond_profit"] = daily["profit_ratio"] > p.profit_min
@@ -143,6 +201,7 @@ def run(bars: pd.DataFrame, float_shares: float | pd.Series,
     daily["cond_volume"] = daily["vol_surge"]
     daily = pd.concat([daily, state], axis=1)
 
-    daily["triggered"] = (daily["active"] & daily["cond_ma_up"] & daily["cond_profit"]
+    daily["triggered"] = (daily["active"] & daily["cond_pullback"]
+                          & daily["cond_ma_up"] & daily["cond_profit"]
                           & daily["cond_inflow"] & daily["cond_volume"])
     return {"daily": daily, "sequences": sequences, "params": p}

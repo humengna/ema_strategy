@@ -42,6 +42,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--limit", type=int, default=0,
                     help="只取股票池前 N 只,用于先小规模试跑(0=不限制)")
     ap.add_argument("--explain", default="", metavar="CODE", help="只诊断这一只股票")
+    ap.add_argument("--pullback-window", type=int, default=6, dest="pullback_window",
+                    help="[bull] 回踩需发生在近 N 个交易日内(含当日),默认 6")
+    ap.add_argument("--no-pullback", action="store_true", dest="no_pullback",
+                    help="[bull] 不要求近期有过回踩")
     ap.add_argument("--profit-min", type=float, default=0.90, dest="profit_min",
                     help="[bull] 获利筹码下限,默认 0.90")
     ap.add_argument("--volume-ratio", type=float, default=1.5, dest="volume_ratio",
@@ -93,7 +97,9 @@ def main(argv=None) -> int:
 def _run_bull(args, seq_params: Params, start: str) -> int:
     """多头黄金眼:形态维持 + 获利筹码 + 资金流入 + 放量。"""
     p = BullParams(seq=seq_params, profit_min=args.profit_min,
-                   volume_ratio=args.volume_ratio, volume_window=args.volume_window)
+                   volume_ratio=args.volume_ratio, volume_window=args.volume_window,
+                   require_pullback=not args.no_pullback,
+                   pullback_window=args.pullback_window)
 
     if args.explain:
         code = args.explain
@@ -115,8 +121,14 @@ def _run_bull(args, seq_params: Params, start: str) -> int:
     if args.limit:
         codes = codes[:args.limit]
     print(f"选股日 {args.date} | 标的 {len(codes)} 只 | 行情自 {start} | 复权 {args.dividend}")
-    print(f"条件: 形态维持 且 获利筹码>{p.profit_min:.0%} 且 资金流入>0 "
-          f"且 量>前{p.volume_window}日均量x{p.volume_ratio}")
+    conds = ["形态维持"]
+    if p.require_pullback:
+        conds.append(f"近{p.pullback_window}日内有回踩")
+    if p.require_ma_up:
+        conds.append("三线均向上")
+    conds += [f"获利筹码>{p.profit_min:.0%}", "资金流入>0",
+              f"量>前{p.volume_window}日均量x{p.volume_ratio}"]
+    print("条件: " + " 且 ".join(conds))
 
     picks = bull_scan(args.date, codes, start, p, args.dividend)
     if not len(picks):

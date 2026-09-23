@@ -84,6 +84,14 @@ def explain(code: str, bars: pd.DataFrame, float_shares: float,
          if active else ("MA5或MA10已跌破MA30,形态破坏" if broken else "尚无有效形态")))
 
     lines.append("  --- 触发条件 ---")
+    if p.require_pullback:
+        pb = daily["pullback_day"]
+        hist = pb.iloc[-p.pullback_window:]
+        hit = [d.date() for d in hist.index[hist]]
+        row(f"近{p.pullback_window}日内有回踩", bool(last["recent_pullback"]),
+            f"回踩日 {hit}" if hit else
+            f"近{p.pullback_window}日无回踩(需最低价跌破MA30后收盘站回)")
+
     if p.require_ma_up:
         d1 = daily.iloc[-2] if len(daily) > 1 else last
         row("三条均线均向上", bool(last["ma_up"]),
