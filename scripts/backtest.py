@@ -242,7 +242,8 @@ def main(argv=None) -> int:
                  else feed.fetch_universe(a.sector, asof=a.end or None))
         if a.limit:
             codes = codes[:a.limit]
-        print(f"标的 {len(codes)} 只 | 策略 {a.strategy} | 持有 {a.hold} 日")
+        print(f"标的 {len(codes)} 只 | 策略 {a.strategy} | "
+              f"持有 {'/'.join(str(h) for h in holds)} 日")
         for i in range(0, len(codes), 200):
             chunk = codes[i:i + 200]
             print(f"  [{i + len(chunk)}/{len(codes)}] ...", flush=True)
