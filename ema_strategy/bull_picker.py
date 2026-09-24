@@ -97,7 +97,15 @@ def explain(code: str, bars: pd.DataFrame, float_shares: float,
             f"回踩日 {hit}" if hit else
             f"近{p.pullback_window}日无回踩(需最低价跌破MA30后收盘站回)")
 
-    if p.require_ma_up:
+    if p.require_ma_turn:
+        d1 = daily.iloc[-2] if len(daily) > 1 else last
+        d2 = daily.iloc[-3] if len(daily) > 2 else d1
+        prev_down = [n for n, c in (("MA5", "ma_f"), ("MA10", "ma_m"), ("MA30", "ma_s"))
+                     if d1[c] < d2[c]]
+        row("均线转向(昨有下行今全上)", bool(last["ma_turn"]),
+            f"昨日下行的均线 {prev_down or '无'};今日三条"
+            f"{'全部上行' if last['ma_up'] else '未全部上行'}")
+    elif p.require_ma_up:
         d1 = daily.iloc[-2] if len(daily) > 1 else last
         row("三条均线均向上", bool(last["ma_up"]),
             f"MA5 {last['ma_f']:.3f}/{d1['ma_f']:.3f}  "
@@ -122,9 +130,14 @@ def explain(code: str, bars: pd.DataFrame, float_shares: float,
     vol = bars["volume"]
     base = vol.rolling(p.volume_window).mean().shift(1).iloc[-1]
     times = vol.iloc[-1] / base if base else float("nan")
-    row(f"放量 > 前{p.volume_window}日均量 x {p.volume_ratio}", bool(last["cond_volume"]),
-        f"成交量 {vol.iloc[-1]:,.0f} / 均量 {base:,.0f} = {times:.2f} 倍"
-        if pd.notna(base) else "均量不可得")
+    if p.volume_mode == "prev":
+        prev_v = vol.iloc[-2] if len(vol) > 1 else float("nan")
+        row("放量(高于前一日)", bool(last["cond_volume"]),
+            f"成交量 {vol.iloc[-1]:,.0f} vs 前一日 {prev_v:,.0f}")
+    else:
+        row(f"放量 > 前{p.volume_window}日均量 x {p.volume_ratio}", bool(last["cond_volume"]),
+            f"成交量 {vol.iloc[-1]:,.0f} / 均量 {base:,.0f} = {times:.2f} 倍"
+            if pd.notna(base) else "均量不可得")
 
     lines.append("  ==> " + ("【入选】 触发多头黄金眼" if bool(last["triggered"]) else "【不入选】"))
     return "\n".join(lines)

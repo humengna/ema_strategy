@@ -44,6 +44,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--no-download", action="store_true", dest="no_download",
                     help="跳过下载,直接读 QMT 本地缓存")
     ap.add_argument("--explain", default="", metavar="CODE", help="只诊断这一只股票")
+    ap.add_argument("--ma-turn", action="store_true", dest="ma_turn",
+                    help="[bull] 均线转向日:前一日至少一条下行,当日三条全部上行(比 --ma-up 严)")
+    ap.add_argument("--volume-mode", default="ma", choices=["ma", "prev"],
+                    dest="volume_mode",
+                    help="[bull] 放量口径:ma=前N日均量x倍数;prev=高于前一日")
     ap.add_argument("--pullback-window", type=int, default=6, dest="pullback_window",
                     help="[bull] 回踩需发生在近 N 个交易日内(含当日),默认 6")
     ap.add_argument("--no-pullback", action="store_true", dest="no_pullback",
@@ -101,7 +106,8 @@ def _run_bull(args, seq_params: Params, start: str) -> int:
     p = BullParams(seq=seq_params, profit_min=args.profit_min,
                    volume_ratio=args.volume_ratio, volume_window=args.volume_window,
                    require_pullback=not args.no_pullback,
-                   pullback_window=args.pullback_window)
+                   pullback_window=args.pullback_window,
+                   require_ma_turn=args.ma_turn, volume_mode=args.volume_mode)
 
     if args.explain:
         code = args.explain
@@ -136,10 +142,13 @@ def _run_bull(args, seq_params: Params, start: str) -> int:
     conds = ["形态维持"]
     if p.require_pullback:
         conds.append(f"近{p.pullback_window}日内有回踩")
-    if p.require_ma_up:
+    if p.require_ma_turn:
+        conds.append("均线转向(昨有下行今全上)")
+    elif p.require_ma_up:
         conds.append("三线均向上")
     conds += [f"获利筹码>{p.profit_min:.0%}", "资金流入>0",
-              f"量>前{p.volume_window}日均量x{p.volume_ratio}"]
+              "量>前一日" if p.volume_mode == "prev"
+              else f"量>前{p.volume_window}日均量x{p.volume_ratio}"]
     print("条件: " + " 且 ".join(conds))
 
     picks = bull_scan(args.date, codes, start, p, args.dividend)

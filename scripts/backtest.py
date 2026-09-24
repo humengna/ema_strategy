@@ -195,6 +195,11 @@ def main(argv=None) -> int:
     ap.add_argument("--csv-dir", default="", dest="csv_dir",
                     help="用本地CSV代替 xtdata(文件名即代码,需含 Date/OHLC/volume)")
     ap.add_argument("--cost", type=float, default=0.003, help="往返成本,默认 0.3%%")
+    ap.add_argument("--ma-turn", action="store_true", dest="ma_turn",
+                    help="[bull] 均线转向日:前一日至少一条下行,当日三条全部上行(比 --ma-up 严)")
+    ap.add_argument("--volume-mode", default="ma", choices=["ma", "prev"],
+                    dest="volume_mode",
+                    help="[bull] 放量口径:ma=前N日均量x倍数;prev=高于前一日")
     ap.add_argument("--pullback-window", type=int, default=6, dest="pullback_window")
     ap.add_argument("--no-pullback", action="store_true", dest="no_pullback")
     ap.add_argument("--profit-min", type=float, default=0.90, dest="profit_min")
@@ -214,7 +219,8 @@ def main(argv=None) -> int:
     p_bull = BullParams(seq=p_seq, profit_min=a.profit_min,
                         volume_ratio=a.volume_ratio, volume_window=a.volume_window,
                         require_pullback=not a.no_pullback,
-                        pullback_window=a.pullback_window)
+                        pullback_window=a.pullback_window,
+                        require_ma_turn=a.ma_turn, volume_mode=a.volume_mode)
 
     all_events, fwd_by_code = [], {h: {} for h in holds}
     no_flow_count = 0

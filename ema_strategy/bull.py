@@ -17,9 +17,11 @@
 触发条件(形态维持期间,当日须同时满足)
     0. 近 N 个交易日内有过回踩,且自回踩以来形态未破坏(N 默认 6,含当日)
     1. 三条均线均向上          —— MA5、MA10、MA30 当日均较前一日上行
+       (require_ma_turn=True 时改为更严的「转向日」:前一日至少一条下行,当日三条全上行)
     2. 获利筹码 > 90%          —— 自行计算,见 chips.py
     3. 当日资金流入            —— bidMostAmount - offMostAmount > 0
-    4. 放量                    —— 成交量 > 前 N 日均量 * ratio
+    4. 放量                    —— volume_mode="ma"  : 成交量 > 前 N 日均量 * ratio
+                                  volume_mode="prev": 成交量 > 前一日成交量
 
 规则未定义、本实现的约定(均可在 BullParams 调整):
   · 「放量」的口径:默认 成交量 > 前5日均量 * 1.5(不含当日,避免自我参照)
@@ -44,6 +46,8 @@ class BullParams:
     require_pullback: bool = True  # 是否要求近期有过回踩
     pullback_window: int = 6       # 回踩需发生在近 N 个交易日内(含当日)
     require_ma_up: bool = True     # 三条均线当日是否须全部上行
+    require_ma_turn: bool = False  # 更严:前一日至少一条下行,当日三条全部上行
+    volume_mode: str = "ma"        # ma=前N日均量*ratio;prev=高于前一日
     profit_min: float = 0.90       # 获利筹码下限(严格大于)
     volume_ratio: float = 1.5      # 放量倍数
     volume_window: int = 5         # 均量窗口(不含当日)
@@ -145,11 +149,34 @@ def all_ma_rising(daily: pd.DataFrame) -> pd.Series:
     return rising[0] & rising[1] & rising[2]
 
 
-def volume_surge(volume: pd.Series, window: int, ratio: float) -> pd.Series:
-    """放量:当日成交量 > 前 window 日均量 * ratio。
+def ma_turn_up(daily: pd.DataFrame) -> pd.Series:
+    """均线转向日:前一日至少有一条均线下行,当日三条全部上行。
 
-    均量窗口经 shift(1) 排除当日,否则当日放量会把自己的均值抬高,条件被削弱。
+    比 all_ma_rising 严格 —— 后者只看当日状态,这里要求发生了「由乱转齐」的跃迁,
+    因此每段上行趋势里通常只命中第一天。
+
+    「至少一条向下」按字面取严格小于;走平(相等)不算向下,
+    故走平转全上行不会被判为转向。
     """
+    cols = ("ma_f", "ma_m", "ma_s")
+    any_down = pd.concat([daily[c] < daily[c].shift(1) for c in cols], axis=1).any(axis=1)
+    prev_valid = pd.concat([daily[c].shift(2).notna() for c in cols], axis=1).all(axis=1)
+    return all_ma_rising(daily) & any_down.shift(1, fill_value=False) & prev_valid
+
+
+def volume_surge(volume: pd.Series, window: int, ratio: float,
+                 mode: str = "ma") -> pd.Series:
+    """放量。
+
+    mode="ma"  :当日成交量 > 前 window 日均量 * ratio。
+                均量窗口经 shift(1) 排除当日,否则当日放量会把自己的均值抬高。
+    mode="prev":当日成交量 > 前一日成交量(更宽松,约一半的交易日都满足)。
+    """
+    if mode == "prev":
+        prev = volume.shift(1)
+        return (volume > prev) & prev.notna()
+    if mode != "ma":
+        raise ValueError(f"未知 volume_mode: {mode}")
     base = volume.rolling(window).mean().shift(1)
     return (volume > base * ratio) & base.notna()
 
@@ -200,13 +227,20 @@ def run(bars: pd.DataFrame, float_shares: float | pd.Series,
                                              decay=p.chip_decay, bin_pct=p.chip_bin_pct)
         daily["profit_source"] = "内置换手衰减法"
     daily["net_inflow"] = net_inflow(flow, daily.index)
-    daily["vol_surge"] = volume_surge(bars["volume"], p.volume_window, p.volume_ratio)
+    daily["vol_surge"] = volume_surge(bars["volume"], p.volume_window,
+                                      p.volume_ratio, p.volume_mode)
 
     daily["pullback_day"] = pullback_days(daily)
     daily["recent_pullback"] = recent_pullback(daily, p.pullback_window)
     daily["cond_pullback"] = daily["recent_pullback"] if p.require_pullback else True
     daily["ma_up"] = all_ma_rising(daily)
-    daily["cond_ma_up"] = daily["ma_up"] if p.require_ma_up else True
+    daily["ma_turn"] = ma_turn_up(daily)
+    if p.require_ma_turn:
+        daily["cond_ma_up"] = daily["ma_turn"]      # 转向本身已蕴含当日三条全上行
+    elif p.require_ma_up:
+        daily["cond_ma_up"] = daily["ma_up"]
+    else:
+        daily["cond_ma_up"] = True
     daily["cond_profit"] = daily["profit_ratio"] > p.profit_min
     daily["cond_inflow"] = daily["net_inflow"] > 0
     daily["cond_volume"] = daily["vol_surge"]

@@ -309,3 +309,84 @@ def test_explain_reports_profit_source(bars, flow):
     ext = pd.Series(0.99, index=bars.index)
     assert "来源:外部" in explain("600000.SH", bars, 0, flow, P, profit_series=ext)
     assert "来源:内置换手衰减法" in explain("600000.SH", bars, FLOAT, flow, P)
+
+
+# ---------------------------------------------------------------- 均线转向
+def _ma3(f, m, s):
+    return pd.DataFrame({"ma_f": f, "ma_m": m, "ma_s": s},
+                        index=pd.bdate_range("2024-01-01", periods=len(f)))
+
+
+def test_ma_turn_requires_prev_day_decline():
+    """前一日至少一条下行、当日三条全上行 —— 才算转向。"""
+    from ema_strategy.bull import ma_turn_up
+    #        t0    t1(有下行)  t2(全上行)
+    d = _ma3([10.0, 9.9, 10.2], [10.0, 10.1, 10.3], [10.0, 10.1, 10.2])
+    assert ma_turn_up(d).tolist() == [False, False, True]
+
+
+def test_ma_turn_false_when_prev_day_also_all_up():
+    """连续上行的第二天不是转向日。"""
+    from ema_strategy.bull import ma_turn_up
+    d = _ma3([10.0, 10.1, 10.2], [10.0, 10.1, 10.2], [10.0, 10.1, 10.2])
+    assert not ma_turn_up(d).any()
+
+
+def test_ma_turn_false_when_today_not_all_up():
+    from ema_strategy.bull import ma_turn_up
+    d = _ma3([10.0, 9.9, 10.2], [10.0, 10.1, 10.0], [10.0, 10.1, 10.2])
+    assert not ma_turn_up(d).any()
+
+
+def test_ma_turn_flat_is_not_down():
+    """走平不算向下,故「走平 -> 全上行」不判为转向。"""
+    from ema_strategy.bull import ma_turn_up
+    d = _ma3([10.0, 10.0, 10.2], [10.0, 10.0, 10.3], [10.0, 10.0, 10.2])
+    assert not ma_turn_up(d).any()
+
+
+def test_ma_turn_implies_all_rising(bars):
+    from ema_strategy.bull import all_ma_rising, ma_turn_up
+    from ema_strategy.sequence import prepare
+    daily = prepare(bars, P.seq)
+    turn, up = ma_turn_up(daily), all_ma_rising(daily)
+    assert not (turn & ~up).any()          # 转向必然蕴含当日三条全上行
+    assert turn.sum() < up.sum()           # 且严格更少
+
+
+# ---------------------------------------------------------------- 放量口径
+def test_volume_mode_prev():
+    from ema_strategy.bull import volume_surge
+    v = pd.Series([100.0, 120.0, 110.0], index=pd.bdate_range("2024-01-01", periods=3))
+    assert volume_surge(v, 5, 1.5, "prev").tolist() == [False, True, False]
+
+
+def test_volume_mode_prev_is_looser_than_ma(bars):
+    from ema_strategy.bull import volume_surge
+    v = bars["volume"]
+    assert volume_surge(v, 5, 1.5, "prev").sum() > volume_surge(v, 5, 1.5, "ma").sum()
+
+
+def test_volume_mode_rejects_unknown():
+    from ema_strategy.bull import volume_surge
+    with pytest.raises(ValueError, match="未知 volume_mode"):
+        volume_surge(pd.Series([1.0, 2.0]), 5, 1.5, "bogus")
+
+
+def test_new_combo_triggers_more_than_old(bars, flow):
+    """放宽后的组合应比原组合出手更多。"""
+    old = run(bars, FLOAT, flow, BullParams())["daily"]
+    new = run(bars, FLOAT, flow, BullParams(
+        require_ma_turn=True, volume_mode="prev",
+        profit_min=0.85, require_pullback=False))["daily"]
+    assert new["triggered"].sum() > old["triggered"].sum()
+
+
+def test_triggered_days_satisfy_turn_when_required(bars, flow):
+    p = BullParams(require_ma_turn=True, volume_mode="prev",
+                   profit_min=0.85, require_pullback=False)
+    daily = run(bars, FLOAT, flow, p)["daily"]
+    hit = daily[daily["triggered"]]
+    if len(hit):
+        assert hit["ma_turn"].all()
+        assert (hit["profit_ratio"] > 0.85).all()
