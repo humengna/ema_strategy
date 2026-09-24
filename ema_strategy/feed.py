@@ -270,6 +270,57 @@ def _normalize_flow(df) -> Optional[pd.DataFrame]:
     return out.groupby(level=0).last().sort_index()
 
 
+def fetch_winner_chips(codes: Iterable[str], start: str, end: str,
+                       func_name: str = "get_winner_chips", **kwargs) -> dict:
+    """取外部计算好的获利筹码比例,返回 {code: Series(0~1, 索引为日期)}。
+
+    xtquant 250807.1.2 里并没有 get_winner_chips —— .py、文档与 .pyd 中均无此名。
+    因此这里按名字动态查找:装了带该接口的版本就能直接用,没有则明确报错,
+    而不是悄悄退回自算、让两套口径混在一起。
+
+    若该函数的参数或返回结构与此处假设不同,改这一个函数即可,
+    上层(bull.run 的 profit_series 参数)不用动。
+    """
+    from xtquant import xtdata
+
+    func = getattr(xtdata, func_name, None)
+    if func is None:
+        raise AttributeError(
+            f"当前 xtquant 没有 {func_name}。可选做法:\n"
+            f"  1) 升级到提供该接口的 xtquant 版本\n"
+            f"  2) 自行取得获利比例后,用 bull.run(..., profit_series=...) 注入\n"
+            f"  3) 不传,使用内置的换手衰减法(chips.profit_ratio)")
+
+    raw = func(list(codes), start_time=start, end_time=end, **kwargs)
+    return {c: _normalize_winner(v) for c, v in (raw or {}).items()
+            if _normalize_winner(v) is not None}
+
+
+def _normalize_winner(value) -> Optional[pd.Series]:
+    """把获利比例归一成:DatetimeIndex 的 Series,取值 0~1。
+
+    容忍百分数(>1 视为百分比自动除 100)与 DataFrame/Series 两种返回形态。
+    """
+    if value is None or len(value) == 0:
+        return None
+    if isinstance(value, pd.DataFrame):
+        col = next((c for c in value.columns
+                    if str(c).lower() in ("winner", "winner_chips", "ratio", "value")),
+                   value.columns[-1])
+        s = value[col]
+    else:
+        s = pd.Series(value)
+
+    s = pd.to_numeric(s, errors="coerce")
+    idx = pd.to_datetime(pd.Index(s.index).astype(str).str.slice(0, 8),
+                         format="%Y%m%d", errors="coerce")
+    s.index = idx
+    s = s[s.index.notna()].sort_index()
+    if s.dropna().gt(1.0).any():          # 返回的是百分数
+        s = s / 100.0
+    return s.clip(0.0, 1.0)
+
+
 def fetch_float_shares(codes: Iterable[str], verbose: bool = True) -> dict:
     """取流通股本(股),用于换手率与筹码分布。
 

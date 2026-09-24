@@ -171,10 +171,15 @@ def net_inflow(flow: pd.DataFrame | None, index: pd.DatetimeIndex) -> pd.Series:
 
 
 def run(bars: pd.DataFrame, float_shares: float | pd.Series,
-        flow: pd.DataFrame | None = None, p: BullParams | None = None) -> dict:
+        flow: pd.DataFrame | None = None, p: BullParams | None = None,
+        profit_series: pd.Series | None = None) -> dict:
     """完整扫描,返回逐日明细与触发标记。
 
     bars 需含 open/high/low/close/volume(amount 可选,用于成交均价)。
+
+    profit_series 传入时直接采用外部计算的获利筹码比例(如 xtdata 的
+    get_winner_chips),不再走内置的换手衰减法;缺失的日期记 NaN,
+    该日不会触发 —— 不拿自算值去填,避免两套口径混在一起。
     """
     p = p or BullParams()
     if not isinstance(bars.index, pd.DatetimeIndex):
@@ -186,8 +191,14 @@ def run(bars: pd.DataFrame, float_shares: float | pd.Series,
     sequences = find_sequences(daily, p.seq)
     state = pattern_state(daily, sequences)
 
-    daily["profit_ratio"] = profit_ratio(bars, float_shares,
-                                         decay=p.chip_decay, bin_pct=p.chip_bin_pct)
+    if profit_series is not None:
+        daily["profit_ratio"] = pd.to_numeric(
+            profit_series.reindex(daily.index), errors="coerce")
+        daily["profit_source"] = "外部"
+    else:
+        daily["profit_ratio"] = profit_ratio(bars, float_shares,
+                                             decay=p.chip_decay, bin_pct=p.chip_bin_pct)
+        daily["profit_source"] = "内置换手衰减法"
     daily["net_inflow"] = net_inflow(flow, daily.index)
     daily["vol_surge"] = volume_surge(bars["volume"], p.volume_window, p.volume_ratio)
 

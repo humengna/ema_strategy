@@ -17,15 +17,19 @@ PICK_COLUMNS = ["code", "pick_date", "pattern_start", "days_in_pattern",
 
 def evaluate(code: str, bars: pd.DataFrame, float_shares: float,
              flow: Optional[pd.DataFrame] = None, p: Optional[BullParams] = None,
-             max_gap_days: int = 30) -> Optional[dict]:
-    """bars 最后一日是否触发。不触发返回 None。"""
+             max_gap_days: int = 30,
+             profit_series: Optional[pd.Series] = None) -> Optional[dict]:
+    """bars 最后一日是否触发。不触发返回 None。
+
+    profit_series 可注入外部计算的获利筹码比例;此时不需要 float_shares。
+    """
     p = p or BullParams()
     if len(bars) < p.warmup:
         return None
-    if not float_shares or float_shares <= 0:
-        return None                               # 无流通股本则筹码无从算起
+    if profit_series is None and (not float_shares or float_shares <= 0):
+        return None                               # 既无外部值也无流通股本,筹码无从算起
 
-    res = run(bars, float_shares, flow, p)
+    res = run(bars, float_shares, flow, p, profit_series)
     daily = res["daily"]
     last = daily.iloc[-1]
     if not bool(last["triggered"]):
@@ -50,7 +54,8 @@ def evaluate(code: str, bars: pd.DataFrame, float_shares: float,
 
 def explain(code: str, bars: pd.DataFrame, float_shares: float,
             flow: Optional[pd.DataFrame] = None, p: Optional[BullParams] = None,
-            max_gap_days: int = 30) -> str:
+            max_gap_days: int = 30,
+            profit_series: Optional[pd.Series] = None) -> str:
     """逐条打印形态与三个触发条件的实际取值。与 evaluate() 共用口径。"""
     p = p or BullParams()
     lines = []
@@ -61,7 +66,7 @@ def explain(code: str, bars: pd.DataFrame, float_shares: float,
     if len(bars) < p.warmup:
         return f"{code}: 数据不足({len(bars)}根,需 >= {p.warmup}根)"
 
-    res = run(bars, float_shares, flow, p)
+    res = run(bars, float_shares, flow, p, profit_series)
     daily, seq = res["daily"], res["sequences"]
     last, asof = daily.iloc[-1], daily.index[-1]
 
@@ -100,8 +105,10 @@ def explain(code: str, bars: pd.DataFrame, float_shares: float,
             f"MA30 {last['ma_s']:.3f}/{d1['ma_s']:.3f}(当日/前一日)")
 
     pr = last["profit_ratio"]
+    src = last.get("profit_source", "内置换手衰减法")
     row(f"获利筹码 > {p.profit_min:.0%}", bool(last["cond_profit"]),
-        f"获利筹码 = {pr:.1%}" if pd.notna(pr) else "获利筹码无法计算(缺流通股本或数据不足)")
+        f"获利筹码 = {pr:.1%}(来源:{src})" if pd.notna(pr)
+        else f"获利筹码不可得(来源:{src});外部数据缺该日时不触发")
 
     inflow = last["net_inflow"]
     if pd.isna(inflow):

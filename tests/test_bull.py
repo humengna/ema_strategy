@@ -273,3 +273,39 @@ def test_triggered_days_have_recent_pullback(bars, flow):
     hit = daily[daily["triggered"]]
     if len(hit):
         assert hit["recent_pullback"].all()
+
+
+# ------------------------------------------------ 外部注入的获利筹码比例
+def test_external_profit_series_is_used(bars, flow):
+    """注入外部获利比例时,应直接采用,不再走内置换手衰减法。"""
+    ext = pd.Series(0.95, index=bars.index)
+    daily = run(bars, FLOAT, flow, P, profit_series=ext)["daily"]
+    assert (daily["profit_ratio"].dropna() == 0.95).all()
+    assert daily["profit_source"].iloc[-1] == "外部"
+
+
+def test_builtin_used_when_not_injected(bars, flow):
+    daily = run(bars, FLOAT, flow, P)["daily"]
+    assert daily["profit_source"].iloc[-1] == "内置换手衰减法"
+
+
+def test_external_missing_days_do_not_trigger(bars, flow):
+    """外部数据缺某日时记 NaN,该日不触发 —— 不拿自算值去填。"""
+    ext = pd.Series(0.99, index=bars.index)
+    ext.iloc[-50:] = np.nan
+    daily = run(bars, FLOAT, flow, P, profit_series=ext)["daily"]
+    assert daily["profit_ratio"].iloc[-50:].isna().all()
+    assert not daily["triggered"].iloc[-50:].any()
+
+
+def test_evaluate_accepts_external_without_float_shares(bars, flow):
+    """注入外部获利比例后,不再需要流通股本。"""
+    ext = pd.Series(0.99, index=bars.index)
+    res = evaluate("600000.SH", bars, 0, flow, P, profit_series=ext)
+    assert res is None or res["profit_ratio"] == pytest.approx(0.99)
+
+
+def test_explain_reports_profit_source(bars, flow):
+    ext = pd.Series(0.99, index=bars.index)
+    assert "来源:外部" in explain("600000.SH", bars, 0, flow, P, profit_series=ext)
+    assert "来源:内置换手衰减法" in explain("600000.SH", bars, FLOAT, flow, P)

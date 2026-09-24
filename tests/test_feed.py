@@ -127,3 +127,42 @@ def test_parse_ymd_rejects_invalid(value):
 def test_parse_ymd_accepts_valid(value, expected):
     from ema_strategy.feed import parse_ymd
     assert parse_ymd(value) == pd.Timestamp(expected)
+
+
+def test_normalize_winner_handles_percent_and_fraction():
+    """获利比例可能以百分数或小数返回,统一归到 0~1。"""
+    from ema_strategy.feed import _normalize_winner
+    idx = ["20240102", "20240103"]
+    assert _normalize_winner(pd.Series([95.0, 80.0], index=idx)).tolist() == [0.95, 0.80]
+    assert _normalize_winner(pd.Series([0.95, 0.80], index=idx)).tolist() == [0.95, 0.80]
+
+
+def test_normalize_winner_clips_and_sorts():
+    from ema_strategy.feed import _normalize_winner
+    s = _normalize_winner(pd.Series([1.5, -0.2], index=["20240103", "20240102"]))
+    assert s.index.is_monotonic_increasing
+    assert s.between(0.0, 1.0).all()
+
+
+def test_normalize_winner_from_dataframe():
+    from ema_strategy.feed import _normalize_winner
+    df = pd.DataFrame({"winner": [0.9, 0.8]}, index=["20240102", "20240103"])
+    assert _normalize_winner(df).tolist() == [0.9, 0.8]
+
+
+def test_normalize_winner_empty():
+    from ema_strategy.feed import _normalize_winner
+    assert _normalize_winner(None) is None
+    assert _normalize_winner(pd.Series(dtype=float)) is None
+
+
+def test_fetch_winner_chips_reports_missing_function(monkeypatch):
+    """xtquant 没有该接口时必须明确报错,不能悄悄退回自算。"""
+    import types
+
+    from ema_strategy import feed as feed_mod
+    fake = types.SimpleNamespace()          # 不含 get_winner_chips
+    monkeypatch.setitem(__import__("sys").modules, "xtquant",
+                        types.SimpleNamespace(xtdata=fake))
+    with pytest.raises(AttributeError, match="没有 get_winner_chips"):
+        feed_mod.fetch_winner_chips(["000001.SZ"], "20240101", "20240201")
