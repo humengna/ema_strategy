@@ -140,6 +140,31 @@ def parse_ymd(value) -> Optional[pd.Timestamp]:
 
 
 # ------------------------------------------------------------- 取数(需 Windows + QMT)
+_DETAIL_CACHE: dict = {}
+
+
+def instrument_detail(code: str) -> Optional[dict]:
+    """带缓存的合约信息。
+
+    get_instrument_detail_list 内部只是对 get_instrument_detail 的循环,没有批量优势;
+    而股票池筛选与流通股本各要取一遍,全市场就是近万次重复调用。
+    合约信息在一次回测内不会变,缓存即可。
+    """
+    if code in _DETAIL_CACHE:
+        return _DETAIL_CACHE[code]
+    from xtquant import xtdata
+    try:
+        info = xtdata.get_instrument_detail(code)
+    except Exception:
+        info = None
+    _DETAIL_CACHE[code] = info
+    return info
+
+
+def clear_detail_cache() -> None:
+    _DETAIL_CACHE.clear()
+
+
 def fetch_daily(codes: Iterable[str], start: str, end: str,
                 dividend_type: str = "back", download: bool = True) -> dict:
     """下载并读取日线,返回 {code: 已清洗的 DataFrame}。"""
@@ -169,7 +194,7 @@ def fetch_universe(sector: str = "沪深A股", exclude_st: bool = True,
 
     for code in xtdata.get_stock_list_in_sector(sector) or []:
         try:
-            info = xtdata.get_instrument_detail(code)
+            info = instrument_detail(code)
             if not info:
                 skipped["no_detail"] += 1
                 continue
@@ -325,13 +350,12 @@ def fetch_float_shares(codes: Iterable[str], verbose: bool = True) -> dict:
     """取流通股本(股),用于换手率与筹码分布。
 
     只能取到当前值;增发/解禁前后回溯历史换手率会有偏差。
+    走 instrument_detail 的缓存,与股票池筛选共用同一次调用。
     """
-    from xtquant import xtdata
-
     out = {}
     for code in codes:
         try:
-            info = xtdata.get_instrument_detail(code)
+            info = instrument_detail(code)
             value = float(info.get("FloatVolume") or 0) if info else 0.0
             if value > 0:
                 out[code] = value

@@ -33,41 +33,24 @@ import pandas as pd
 VOLUME_UNIT = 100          # xtdata 的 volume 以「手」计,1手 = 100股
 
 
-def _daily_distribution(low: float, high: float, peak: float,
-                        edges: np.ndarray, centers: np.ndarray) -> np.ndarray:
-    """当日成交在价格网格上的分布(三角形,峰值在 peak)。"""
-    if not np.isfinite(low) or not np.isfinite(high) or high < low:
-        return np.zeros_like(centers)
-    lo_g, hi_g = edges[0], edges[-1]
-    low, high = max(low, lo_g), min(high, hi_g)      # 越界价格夹进网格
-    if high < low:
-        low = high = min(max((low + high) / 2, lo_g), hi_g)
+def _triangle(seg: np.ndarray, low: float, high: float, peak: float) -> np.ndarray:
+    """在给定的桶中心上铺一个三角形分布(峰值在 peak),并归一化。
 
-    if high - low < 1e-12:                       # 一字板:全部堆在一个价位
-        out = np.zeros_like(centers)
-        out[np.clip(np.searchsorted(edges, low) - 1, 0, len(centers) - 1)] = 1.0
-        return out
+    只作用于当日价格涉及的那十几个桶,不碰整条网格。
+    """
+    if len(seg) == 1:
+        return np.ones(1)
+    if peak < low:
+        peak = low
+    elif peak > high:
+        peak = high
+    left_w = peak - low if peak - low > 1e-12 else 1e-12
+    right_w = high - peak if high - peak > 1e-12 else 1e-12
 
-    peak = min(max(peak, low), high) if np.isfinite(peak) else (low + high) / 2
-    w = np.zeros_like(centers)
-    inside = (centers >= low) & (centers <= high)
-    if not inside.any():
-        out = np.zeros_like(centers)
-        out[np.clip(np.searchsorted(edges, (low + high) / 2) - 1, 0, len(centers) - 1)] = 1.0
-        return out
-
-    c = centers[inside]
-    left = c <= peak
-    # 三角形:peak 处为 1,两端线性衰减到 0
-    denom_l = max(peak - low, 1e-12)
-    denom_r = max(high - peak, 1e-12)
-    vals = np.empty_like(c)
-    vals[left] = (c[left] - low) / denom_l
-    vals[~left] = (high - c[~left]) / denom_r
-    w[inside] = np.clip(vals, 0.0, None)
-
-    total = w.sum()
-    return w / total if total > 0 else w
+    vals = np.where(seg <= peak, (seg - low) / left_w, (high - seg) / right_w)
+    np.clip(vals, 0.0, None, out=vals)
+    total = vals.sum()
+    return vals / total if total > 0 else np.ones(len(seg)) / len(seg)
 
 
 def _price_grid(ref: float, bin_pct: float, span: float) -> tuple[np.ndarray, np.ndarray]:
@@ -123,25 +106,62 @@ def profit_ratio(bars: pd.DataFrame, float_shares: float | pd.Series,
     if valid_close.size == 0:
         return pd.Series(np.nan, index=bars.index)
     edges, centers = _price_grid(float(valid_close[0]), bin_pct, grid_span)
+    n_bins = len(centers)
 
-    dist = np.zeros(len(centers))
+    # --- 逐日索引与权重一次性向量化 ---
+    # 循环内的标量 np.clip / np.searchsorted 是此前的主要开销:
+    # numpy 标量运算要走通用机制(含 getlimits),比 Python 内建慢约两个数量级。
+    lo_c = np.clip(low, edges[0], edges[-1])
+    hi_c = np.clip(high, edges[0], edges[-1])
+    i0_all = np.clip(np.searchsorted(edges, lo_c, side="right") - 1, 0, n_bins - 1)
+    i1_all = np.clip(np.searchsorted(edges, hi_c, side="right") - 1, 0, n_bins - 1)
+    k_all = np.searchsorted(centers, close, side="right")
+
+    shares = volume * volume_unit
+    with np.errstate(divide="ignore", invalid="ignore"):
+        turnover = np.where(np.isfinite(floats) & (floats > 0), shares / floats, np.nan)
+        w_all = np.clip(turnover * decay, 0.0, 1.0)
+        peak_all = np.where(np.isfinite(amount) & (shares > 0),
+                            amount / np.where(shares > 0, shares, 1.0),
+                            (high + low + close) / 3.0)
+    w_all = np.where(np.isfinite(w_all), w_all, 0.0)
+    peak_all = np.where(np.isfinite(peak_all), peak_all, (high + low + close) / 3.0)
+    bad = ~np.isfinite(low) | ~np.isfinite(high) | (high < low)
+
+    dist = np.zeros(n_bins)
     out = np.full(len(bars), np.nan)
+    lo_i, hi_i = n_bins, -1          # 已被触及的桶区间
 
     for i in range(len(bars)):
-        shares = volume[i] * volume_unit
-        turnover = shares / floats[i] if floats[i] and np.isfinite(floats[i]) and floats[i] > 0 else np.nan
-        w = float(np.clip(turnover * decay, 0.0, 1.0)) if np.isfinite(turnover) else 0.0
+        if bad[i]:
+            continue
+        j0, j1 = int(i0_all[i]), int(i1_all[i])
+        if j1 < j0:
+            j0, j1 = j1, j0
+        seg = _triangle(centers[j0:j1 + 1], lo_c[i], hi_c[i], peak_all[i])
+        w = float(w_all[i])
 
-        peak = amount[i] / shares if shares > 0 and np.isfinite(amount[i]) else (high[i] + low[i] + close[i]) / 3
-        today = _daily_distribution(low[i], high[i], peak, edges, centers)
+        if hi_i < lo_i:                        # 首日:直接以当日分布起步
+            dist[j0:j1 + 1] = seg
+            lo_i, hi_i = j0, j1
+        else:
+            if w:
+                dist[lo_i:hi_i + 1] *= (1.0 - w)
+            dist[j0:j1 + 1] += w * seg
+            if j0 < lo_i:
+                lo_i = j0
+            if j1 > hi_i:
+                hi_i = j1
 
-        if dist.sum() <= 0:                       # 首日:直接以当日分布起步
-            dist = today.copy()
-        elif today.sum() > 0:
-            dist = dist * (1.0 - w) + w * today
-
-        total = dist.sum()
-        if total > 0 and i + 1 >= min_periods:
-            out[i] = float(np.clip(dist[centers <= close[i]].sum() / total, 0.0, 1.0))
+        if i + 1 >= min_periods:
+            k = int(k_all[i])
+            if k < lo_i:
+                k = lo_i
+            elif k > hi_i + 1:
+                k = hi_i + 1
+            total = dist[lo_i:hi_i + 1].sum()
+            if total > 0:
+                ratio = dist[lo_i:k].sum() / total
+                out[i] = 0.0 if ratio < 0.0 else (1.0 if ratio > 1.0 else float(ratio))
 
     return pd.Series(out, index=bars.index, name="profit_ratio")

@@ -166,3 +166,30 @@ def test_fetch_winner_chips_reports_missing_function(monkeypatch):
                         types.SimpleNamespace(xtdata=fake))
     with pytest.raises(AttributeError, match="没有 get_winner_chips"):
         feed_mod.fetch_winner_chips(["000001.SZ"], "20240101", "20240201")
+
+
+def test_instrument_detail_is_cached(monkeypatch):
+    """合约信息在一次回测内不变,重复取用必须走缓存。
+
+    股票池筛选与流通股本各要取一遍,全市场不缓存就是近万次重复调用。
+    """
+    import types
+
+    from ema_strategy import feed as feed_mod
+    calls = {"n": 0}
+
+    def fake_detail(code, iscomplete=False):
+        calls["n"] += 1
+        return {"InstrumentName": "测试", "FloatVolume": 1e9, "OpenDate": "20200101"}
+
+    monkeypatch.setitem(__import__("sys").modules, "xtquant",
+                        types.SimpleNamespace(xtdata=types.SimpleNamespace(
+                            get_instrument_detail=fake_detail)))
+    feed_mod.clear_detail_cache()
+    for _ in range(5):
+        feed_mod.instrument_detail("000001.SZ")
+    assert calls["n"] == 1
+
+    feed_mod.fetch_float_shares(["000001.SZ"])          # 复用缓存,不再调用
+    assert calls["n"] == 1
+    feed_mod.clear_detail_cache()
