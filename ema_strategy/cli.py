@@ -41,6 +41,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="要求三个金叉分属不同交易日")
     ap.add_argument("--limit", type=int, default=0,
                     help="只取股票池前 N 只,用于先小规模试跑(0=不限制)")
+    ap.add_argument("--no-download", action="store_true", dest="no_download",
+                    help="跳过下载,直接读 QMT 本地缓存")
     ap.add_argument("--explain", default="", metavar="CODE", help="只诊断这一只股票")
     ap.add_argument("--pullback-window", type=int, default=6, dest="pullback_window",
                     help="[bull] 回踩需发生在近 N 个交易日内(含当日),默认 6")
@@ -103,16 +105,26 @@ def _run_bull(args, seq_params: Params, start: str) -> int:
 
     if args.explain:
         code = args.explain
-        bars = feed.fetch_daily([code], start, args.date,
-                                dividend_type=args.dividend).get(code)
+        bars = feed.fetch_daily([code], start, args.date, dividend_type=args.dividend,
+                                download=not args.no_download).get(code)
         if bars is None or not len(bars):
-            print(f"{code}: 无数据", file=sys.stderr)
+            print(f"{code}: {args.date} 之前无行情数据", file=sys.stderr)
             return 1
+
+        # 诊断的是最后一根K线。若那天停牌,最后一根并非请求日,
+        # 直接给出另一天的结论会让人误判,必须讲明。
+        asof = pd.Timestamp(args.date)
+        actual = bars.index[-1]
+        if actual != asof:
+            print(f"[!] {code} 在 {asof.date()} 无K线(停牌或非交易日),"
+                  f"下面诊断的是最近的 {actual.date()}。", file=sys.stderr)
+
         floats = feed.fetch_float_shares([code])
         if code not in floats:
             print(f"{code}: 取不到流通股本,无法计算获利筹码", file=sys.stderr)
             return 1
-        flow = feed.fetch_money_flow([code], start, args.date).get(code)
+        flow = feed.fetch_money_flow([code], start, args.date,
+                                     download=not args.no_download).get(code)
         print(bull_explain(code, bars, floats[code], flow, p))
         return 0
 
