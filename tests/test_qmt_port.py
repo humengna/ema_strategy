@@ -236,3 +236,78 @@ def test_only_known_context_members(qmt):
             if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
             and n.value.id == "C"}
     assert used <= allowed, f"用到了未确认的上下文成员: {used - allowed}"
+
+
+# ------------------------------------------- 回测提速:缓存不得改变结果
+def test_evaluate_series_last_row_matches_evaluate_one(qmt, bars):
+    """整段计算的最后一行,必须等于只喂到那天的单日判定。"""
+    rng = np.random.default_rng(0)
+    flow = pd.DataFrame({"bidMostAmount": rng.uniform(0, 1e8, len(bars)),
+                         "offMostAmount": rng.uniform(0, 1e8, len(bars))},
+                        index=bars.index)
+    checked = mismatch = 0
+    for i in range(60, len(bars), 29):
+        sub, subflow = bars.iloc[:i], flow.iloc[:i]
+        series_hit = bool(qmt.evaluate_series(sub, 3.3e9, subflow)["triggered"].iloc[-1])
+        one_hit = qmt.evaluate_one(sub, 3.3e9, subflow) is not None
+        checked += 1
+        mismatch += int(series_hit != one_hit)
+    assert checked > 50 and mismatch == 0
+
+
+def test_series_has_no_lookahead(qmt, bars):
+    """整段一次算出的第 i 日取值,必须等于只喂到第 i 日算出的取值。
+
+    这是「整段只算一次」得以成立的前提 —— 若不成立,缓存就是在用未来数据。
+    """
+    rng = np.random.default_rng(0)
+    flow = pd.DataFrame({"bidMostAmount": rng.uniform(0, 1e8, len(bars)),
+                         "offMostAmount": rng.uniform(0, 1e8, len(bars))},
+                        index=bars.index)
+    full = qmt.evaluate_series(bars, 3.3e9, flow)["triggered"].to_numpy()
+    for cut in (400, 900, 1500):
+        trunc = qmt.evaluate_series(bars.iloc[:cut], 3.3e9,
+                                    flow.iloc[:cut])["triggered"].to_numpy()
+        assert (full[:cut] == trunc).all(), f"截断到 {cut} 后结果改变"
+
+
+def test_cached_backtest_equals_per_bar_rescan(qmt, ctx_data, monkeypatch, capsys):
+    """缓存版(整段扫一次)与逐根重算,选出的票必须完全一致。
+
+    提速的底线:不能改变结果。
+    """
+    b, f, d = ctx_data
+    code = next(iter(b))
+    bars = b[code]
+
+    # 逐根重算:对每个交易日只喂到当天,调 evaluate_one
+    expected = {}
+    for i in range(60, len(bars)):
+        sub, subflow = bars.iloc[:i], f[code].iloc[:i]
+        hit = qmt.evaluate_one(sub, 3.3e9, subflow)
+        if hit:
+            day = pd.Timestamp(bars.index[i - 1]).strftime("%Y-%m-%d")
+            expected[day] = code
+
+    # 缓存版:整段扫一次
+    C = MinimalContext(b, f, d)
+    qmt.init(C)
+    got_map = qmt._scan_all(C, [code])
+    got = {day: rows[0]["code"] for day, rows in got_map.items()}
+
+    # 缓存版覆盖完整历史,逐根版从第60根起,故只比对交集之外的差异
+    common_days = {pd.Timestamp(bars.index[i - 1]).strftime("%Y-%m-%d")
+                   for i in range(60, len(bars))}
+    assert {k: v for k, v in got.items() if k in common_days} == expected
+
+
+def test_scan_cache_resets_on_init(qmt, ctx_data):
+    """重跑时必须清掉缓存,否则会沿用上一轮结果。"""
+    b, f, d = ctx_data
+    C = MinimalContext(b, f, d)
+    qmt.init(C)
+    qmt._PICKS_BY_DAY = {"2020-01-01": [{"code": "X"}]}
+    qmt._SCANNED = True
+    qmt.init(C)
+    assert qmt._SCANNED is False
+    assert qmt._PICKS_BY_DAY == {}

@@ -231,14 +231,21 @@ def _profit_ratio(bars, float_shares):
     return pd.Series(out, index=bars.index)
 
 
-def evaluate_one(bars, float_shares, flow):
-    """判断 bars 最后一根K线当日是否入选,返回 dict 或 None。
+def evaluate_series(bars, float_shares, flow):
+    """一次算出整段的逐日入选判定,返回 DataFrame(索引同 bars)。
 
-    bars 需含 open/high/low/close/volume(amount 可选);
-    flow 为含 bidMostAmount / offMostAmount 的 DataFrame,可为 None。
+    回测的关键:整段只算一次。若每根K线都重算一遍全市场,
+    一年 242 根K线就是 242 次全市场扫描,耗时相差两个数量级。
+
+    各条件都是因果的(只用当日及之前的数据),所以整段一次算出的第 i 日取值,
+    与只喂到第 i 日再算的结果完全相同 —— 不存在未来函数,
+    由 tests/test_qmt_port.py 的截断一致性测试保证。
     """
-    if len(bars) < SLOW + 5:
-        return None
+    n = len(bars)
+    idx = bars.index
+    empty = pd.DataFrame({'triggered': np.zeros(n, dtype=bool)}, index=idx)
+    if n < SLOW + 5:
+        return empty
 
     d = bars.copy()
     d['ma_f'] = _ma(d['close'], FAST)
@@ -246,36 +253,44 @@ def evaluate_one(bars, float_shares, flow):
     d['ma_s'] = _ma(d['close'], SLOW)
 
     active = _pattern_active(d, _find_sequences(d))
-    if not bool(active.iloc[-1]):
-        return None
-
     turn = _ma_turn_up(d)
-    if not bool(turn.iloc[-1]):
-        return None
+    vol_ok = _volume_surge_prev(d['volume'])
 
-    if not bool(_volume_surge_prev(d['volume']).iloc[-1]):
-        return None
-
-    # 资金流缺失时不触发 —— 不把缺数据当成「有流入」放过
-    if flow is None or len(flow) == 0:
-        return None
-    if 'bidMostAmount' not in flow.columns or 'offMostAmount' not in flow.columns:
-        return None
-    inflow = flow['bidMostAmount'].reindex(d.index) - flow['offMostAmount'].reindex(d.index)
-    if not (pd.notna(inflow.iloc[-1]) and inflow.iloc[-1] > 0):
-        return None
+    # 资金流缺失时整列为 NaN,该日不触发 —— 不把缺数据当成「有流入」放过
+    if (flow is None or len(flow) == 0
+            or 'bidMostAmount' not in flow.columns
+            or 'offMostAmount' not in flow.columns):
+        inflow = pd.Series(np.nan, index=idx)
+    else:
+        inflow = (flow['bidMostAmount'].reindex(idx)
+                  - flow['offMostAmount'].reindex(idx))
 
     pr = _profit_ratio(d, float_shares)
-    if not (pd.notna(pr.iloc[-1]) and pr.iloc[-1] > PROFIT_MIN):
-        return None
 
-    last = d.iloc[-1]
+    out = pd.DataFrame({
+        'close': d['close'], 'ma5': d['ma_f'], 'ma10': d['ma_m'], 'ma30': d['ma_s'],
+        'volume': d['volume'], 'profit_ratio': pr, 'net_inflow': inflow,
+    }, index=idx)
+    out['triggered'] = (active & turn & vol_ok
+                        & inflow.notna() & (inflow > 0)
+                        & pr.notna() & (pr > PROFIT_MIN))
+    return out
+
+
+def evaluate_one(bars, float_shares, flow):
+    """判断 bars 最后一根K线当日是否入选,返回 dict 或 None。
+
+    供单只诊断使用;批量场景请用 evaluate_series,避免重复计算。
+    """
+    res = evaluate_series(bars, float_shares, flow)
+    if not len(res) or not bool(res['triggered'].iloc[-1]):
+        return None
+    last = res.iloc[-1]
     return {
-        'close': float(last['close']),
-        'ma5': float(last['ma_f']), 'ma10': float(last['ma_m']),
-        'ma30': float(last['ma_s']),
-        'profit_ratio': float(pr.iloc[-1]),
-        'net_inflow': float(inflow.iloc[-1]),
+        'close': float(last['close']), 'ma5': float(last['ma5']),
+        'ma10': float(last['ma10']), 'ma30': float(last['ma30']),
+        'profit_ratio': float(last['profit_ratio']),
+        'net_inflow': float(last['net_inflow']),
         'volume': float(last['volume']),
     }
 
@@ -285,11 +300,15 @@ def evaluate_one(bars, float_shares, flow):
 # QMT 里真正的上下文是 __PyContext(C++ 对象),不是 xtquant 的 qmttools.ContextInfo,
 # 属性集不同,也未必允许挂自定义属性。凡是 C 上的东西一律防御性访问。
 _UNIVERSE = []
+_PICKS_BY_DAY = {}        # 回测缓存:{日期: [入选记录]},整段只算一次
+_SCANNED = False
 
 
 def init(C):
-    global _UNIVERSE
+    global _UNIVERSE, _PICKS_BY_DAY, _SCANNED
     _UNIVERSE = []
+    _PICKS_BY_DAY = {}
+    _SCANNED = False          # 重跑时必须清掉,否则沿用上一轮的结果
     try:
         codes = C.get_stock_list_in_sector(SECTOR) or []
     except Exception as e:
@@ -358,17 +377,14 @@ def _bar_date(C):
         return ''
 
 
-def handlebar(C):
-    if not _should_scan(C):
-        return
+def _scan_all(C, codes):
+    """对股票池整段扫描一次,返回 {日期字符串: [入选记录, ...]}。
 
-    day = _bar_date(C)
-    codes = _UNIVERSE
-    if not codes:
-        print('股票池为空,请确认 init 是否正常执行、SECTOR 是否正确')
-        return
-
-    picks = []
+    这是回测提速的关键。原先 handlebar 每根K线都重算一遍全市场,
+    一年 242 根K线 = 242 次全市场扫描;现在整段只算一次,
+    之后每根K线只做一次字典查表。实测差约两个数量级。
+    """
+    by_day = {}
     for i in range(0, len(codes), 200):
         chunk = codes[i:i + 200]
         try:
@@ -397,12 +413,52 @@ def handlebar(C):
                 fs = float(info.get('FloatVolume') or 0) if info else 0.0
                 if fs <= 0:
                     continue
-                hit = evaluate_one(bars, fs, flows.get(code))
-                if hit:
-                    hit['code'] = code
-                    picks.append(hit)
+                res = evaluate_series(bars, fs, flows.get(code))
+                hits = res[res['triggered']]
+                for ts, row in hits.iterrows():
+                    day = pd.Timestamp(ts).strftime('%Y-%m-%d')
+                    by_day.setdefault(day, []).append({
+                        'code': code, 'close': float(row['close']),
+                        'profit_ratio': float(row['profit_ratio']),
+                        'net_inflow': float(row['net_inflow']),
+                        'volume': float(row['volume']),
+                    })
             except Exception as e:
                 print('%s 计算失败:%s' % (code, e))
+
+        if len(codes) > 200:
+            print('  已扫描 %d/%d' % (min(i + 200, len(codes)), len(codes)))
+    return by_day
+
+
+def handlebar(C):
+    global _PICKS_BY_DAY, _SCANNED
+
+    if not _should_scan(C):
+        return
+
+    day = _bar_date(C)
+    codes = _UNIVERSE
+    if not codes:
+        print('股票池为空,请确认 init 是否正常执行、SECTOR 是否正确')
+        return
+
+    if SCAN_EVERY_BAR:
+        # 回测:整段只扫一次,之后每根K线查表
+        if not _SCANNED:
+            print('整段扫描中(只做一次)...')
+            _PICKS_BY_DAY = _scan_all(C, codes)
+            _SCANNED = True
+            print('扫描完成,共 %d 个交易日有入选' % len(_PICKS_BY_DAY))
+        picks = list(_PICKS_BY_DAY.get(day, []))
+    else:
+        # 实盘/盘后:只看最新一根K线,直接算
+        picks = []
+        scanned = _scan_all(C, codes)
+        if day:
+            picks = list(scanned.get(day, []))
+        elif scanned:
+            picks = list(scanned[max(scanned)])
 
     picks.sort(key=lambda x: x['profit_ratio'], reverse=True)
     print('=' * 60)
