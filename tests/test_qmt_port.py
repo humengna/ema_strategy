@@ -146,3 +146,93 @@ def test_no_float_shares_never_triggers(qmt, bars):
 
 def test_short_history_returns_none(qmt, bars):
     assert qmt.evaluate_one(bars.iloc[:20], 3.3e9, None) is None
+
+
+# ----------------------------------------------- 最小上下文:防属性缺失
+class MinimalContext:
+    """只提供确信存在的方法,模拟 QMT 真实的 __PyContext。
+
+    QMT 里的上下文是 C++ 对象,并非 xtquant 的 qmttools.ContextInfo,
+    属性集更窄 —— 曾因用了 C.trade_mode 直接抛 AttributeError。
+    本类刻意不提供 trade_mode、universe 等,凡多访问一个就会立刻炸出来。
+    """
+
+    def __init__(self, bars_by_code, flows=None, details=None, with_last_bar=True):
+        self._bars = bars_by_code
+        self._flows = flows or {}
+        self._details = details or {}
+        if with_last_bar:
+            self.is_last_bar = lambda: True
+
+    def get_stock_list_in_sector(self, sector):
+        return list(self._bars)
+
+    def get_instrument_detail(self, code, iscomplete=False):
+        return self._details.get(code)
+
+    def get_market_data_ex(self, fields, stock_code, period='1d', start_time='',
+                           end_time='', count=-1, dividend_type='', fill_data=True,
+                           subscribe=True):
+        src = self._flows if period == 'transactioncount1d' else self._bars
+        return {c: src[c] for c in stock_code if c in src}
+
+    def get_bar_timetag(self, barpos=None):
+        return 1735689600000            # 2025-01-01
+
+    def __getattr__(self, name):        # 任何未提供的属性都当作不存在
+        raise AttributeError(
+            f"'MinimalContext' object has no attribute '{name}' —— "
+            f"QMT 的 __PyContext 同样可能没有,请改用防御性访问")
+
+
+@pytest.fixture
+def ctx_data(bars):
+    rng = np.random.default_rng(0)
+    flow = pd.DataFrame({"bidMostAmount": rng.uniform(0, 1e8, len(bars)),
+                         "offMostAmount": rng.uniform(0, 1e8, len(bars))},
+                        index=bars.index)
+    code = "000001.SZ"
+    detail = {"InstrumentName": "测试股", "FloatVolume": 3.3e9, "OpenDate": "20100101"}
+    return {code: bars}, {code: flow}, {code: detail}
+
+
+def test_init_and_handlebar_survive_minimal_context(qmt, ctx_data, capsys):
+    """init 与 handlebar 只能用最小上下文提供的方法,多碰一个就报错。"""
+    b, f, d = ctx_data
+    C = MinimalContext(b, f, d)
+    qmt.init(C)
+    qmt.handlebar(C)
+    out = capsys.readouterr().out
+    assert "股票池" in out and "入选" in out
+
+
+def test_handlebar_without_is_last_bar(qmt, ctx_data, capsys):
+    """连 is_last_bar 都没有时也不能崩,应按「扫描」处理。"""
+    b, f, d = ctx_data
+    C = MinimalContext(b, f, d, with_last_bar=False)
+    qmt.init(C)
+    qmt.handlebar(C)
+    assert "入选" in capsys.readouterr().out
+
+
+def test_no_trade_mode_access(qmt):
+    """源码里不得再出现 C.trade_mode / C.universe 的实际访问。"""
+    import ast
+    src = open(QMT_PATH, encoding="utf-8").read()
+    used = {n.attr for n in ast.walk(ast.parse(src))
+            if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+            and n.value.id == "C"}
+    assert "trade_mode" not in used
+    assert "universe" not in used
+
+
+def test_only_known_context_members(qmt):
+    """限制 C 上可用的成员,新增前须先确认 QMT 真的提供。"""
+    import ast
+    allowed = {"get_stock_list_in_sector", "get_instrument_detail",
+               "get_market_data_ex", "is_last_bar", "get_bar_timetag", "barpos"}
+    src = open(QMT_PATH, encoding="utf-8").read()
+    used = {n.attr for n in ast.walk(ast.parse(src))
+            if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+            and n.value.id == "C"}
+    assert used <= allowed, f"用到了未确认的上下文成员: {used - allowed}"

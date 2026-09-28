@@ -41,6 +41,7 @@ HISTORY_BARS = 400           # 每只票取多少根日线
 EXCLUDE_ST = True
 MIN_LISTED_DAYS = 120
 PRINT_LIMIT = 50             # 每日最多打印多少只
+SCAN_EVERY_BAR = False       # False=只在最新K线选股(实盘);True=每根K线都扫(回测逐日输出)
 
 
 # ------------------------------------------------------- 纯计算(与Python版一致)
@@ -280,8 +281,15 @@ def evaluate_one(bars, float_shares, flow):
 
 
 # ------------------------------------------------------------------ QMT 入口
+# 股票池存模块级变量,不挂到 C 上。
+# QMT 里真正的上下文是 __PyContext(C++ 对象),不是 xtquant 的 qmttools.ContextInfo,
+# 属性集不同,也未必允许挂自定义属性。凡是 C 上的东西一律防御性访问。
+_UNIVERSE = []
+
+
 def init(C):
-    C.universe = []
+    global _UNIVERSE
+    _UNIVERSE = []
     try:
         codes = C.get_stock_list_in_sector(SECTOR) or []
     except Exception as e:
@@ -312,26 +320,52 @@ def init(C):
                 pass
         kept.append(code)
 
-    C.universe = kept
+    _UNIVERSE = kept
     print('股票池 %d 只(剔除 ST %d、次新 %d)' % (len(kept), skip_st, skip_new))
     print('条件: 形态维持 且 均线转向 且 获利筹码>%.0f%% 且 资金流入>0 且 量>前一日'
           % (PROFIT_MIN * 100))
 
 
-def handlebar(C):
-    # 实盘只在最新K线上选股;回测模式逐根输出当日选股
-    if not C.is_last_bar() and C.trade_mode != 'backtest':
-        return
+def _should_scan(C):
+    """本根K线是否要做扫描。
 
-    day = ''
+    不使用 C.trade_mode —— QMT 的 __PyContext 没有该属性(曾因此报
+    AttributeError)。改由 SCAN_EVERY_BAR 显式控制:
+      False(默认)只在最新K线扫描,实盘/盘后选股用;
+      True 每根K线都扫,回测时用来逐日输出选股。
+    is_last_bar 也可能缺失,取不到时按「扫描」处理,宁可多跑不可不跑。
+    """
+    if SCAN_EVERY_BAR:
+        return True
+    try:
+        return bool(C.is_last_bar())
+    except Exception:
+        return True
+
+
+def _bar_date(C):
+    """当前K线日期;取不到就返回空串,不影响选股。"""
     try:
         tt = C.get_bar_timetag(C.barpos)
-        day = pd.Timestamp(tt, unit='ms').strftime('%Y-%m-%d')
     except Exception:
-        pass
+        try:
+            tt = C.get_bar_timetag()
+        except Exception:
+            return ''
+    try:
+        return pd.Timestamp(tt, unit='ms').strftime('%Y-%m-%d')
+    except Exception:
+        return ''
 
-    codes = getattr(C, 'universe', []) or []
+
+def handlebar(C):
+    if not _should_scan(C):
+        return
+
+    day = _bar_date(C)
+    codes = _UNIVERSE
     if not codes:
+        print('股票池为空,请确认 init 是否正常执行、SECTOR 是否正确')
         return
 
     picks = []
