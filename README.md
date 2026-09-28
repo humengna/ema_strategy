@@ -165,13 +165,31 @@ print(es.explain("000001.SZ", bars))        # 逐条诊断
 
 完整规则(两个条件都满足)平均收益最高。样本量偏小(32 笔),仅供参考。
 
+## QMT 内置 Python 版
+
+`qmt/golden_eye_qmt.py` 是自包含的一份,直接贴进 QMT「策略编辑器」即可运行,
+不依赖本仓库的 `ema_strategy` 包(QMT 环境里没有它)。几个必须注意的点:
+
+- 文件首行 `#coding:gbk`,且**文件本身就是 GBK 编码**。存成 UTF-8 会直接
+  `SyntaxError: 'gbk' codec can't decode byte`。
+- 周期选「日线」,**回测必须以副图模式执行**(官方文档要求),不要选主图/主图叠加。
+- 全市场整段只扫一次(`_scan_all` 建 `{日期: 入选记录}` 缓存),之后每根K线只查表。
+  原先每根K线重算一遍全市场,一年 242 根 = 242 次全市场扫描,相差约两个数量级。
+- 所有 `get_market_data_ex` 都显式传 `subscribe=False`:回测取本地数据遍历,
+  订阅模式另有股票数量上限,全市场扫描必须关掉。
+- 资金流(`bidMostAmount`/`offMostAmount`)按 `FLOW_PERIODS` 顺序探测:
+  先 `transactioncount1d`(日级、历史长、不需要 Level2),取不到再退
+  `l2transactioncount`(Level2 大单统计,盘中累计值,按日取末值)。
+  第一批探到哪个就固定用哪个。两个都取不到时该股一律不入选 ——
+  不把「缺数据」当成「有流入」放过去。
+
 ## 测试
 
 ```bash
 python -m pytest
 ```
 
-80 项测试,不需要 QMT 环境。测试数据取自 matplotlib/mplfinance 仓库的公开示例
+238 项测试,不需要 QMT 环境。测试数据取自 matplotlib/mplfinance 仓库的公开示例
 (BSD 许可),选它们是为了让全部测试在任何平台都能跑通。
 
 覆盖:K线分类的四种情形与取等号边界、金叉/死叉、三金叉序列的顺序不变量、

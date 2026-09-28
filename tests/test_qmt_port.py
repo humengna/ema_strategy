@@ -164,10 +164,14 @@ class MinimalContext:
     本类刻意不提供 trade_mode、universe 等,凡多访问一个就会立刻炸出来。
     """
 
-    def __init__(self, bars_by_code, flows=None, details=None, with_last_bar=True):
+    def __init__(self, bars_by_code, flows=None, details=None, with_last_bar=True,
+                 flow_period="transactioncount1d"):
         self._bars = bars_by_code
         self._flows = flows or {}
         self._details = details or {}
+        # 只有这个周期能取到资金流,用来测 FLOW_PERIODS 的顺序与兜底
+        self._flow_period = flow_period
+        self.flow_periods_tried = []
         if with_last_bar:
             self.is_last_bar = lambda: True
 
@@ -180,8 +184,14 @@ class MinimalContext:
     def get_market_data_ex(self, fields, stock_code, period='1d', start_time='',
                            end_time='', count=-1, dividend_type='', fill_data=True,
                            subscribe=True):
-        # 资金流走 l2transactioncount(内置 API 的周期名),与被测文件保持一致
-        src = self._flows if period == 'l2transactioncount' else self._bars
+        if period in ('transactioncount1d', 'transactioncount1m',
+                      'l2transactioncount'):
+            self.flow_periods_tried.append(period)
+            if period != self._flow_period:
+                return {}
+            src = self._flows
+        else:
+            src = self._bars
         return {c: src[c] for c in stock_code if c in src}
 
     def get_bar_timetag(self, barpos=None):
@@ -383,13 +393,53 @@ def test_market_data_uses_subscribe_false():
         assert kw["subscribe"].value is False
 
 
-def test_flow_period_is_l2transactioncount(qmt):
-    """内置 API 的周期列表里没有 transactioncount1d,那是 xtdata 侧的周期。
+def test_flow_periods_prefer_transactioncount1d(qmt):
+    """官方数据字典里内置 get_market_data_ex 可以传 transactioncount1d。
 
-    bidMostAmount/offMostAmount 只在 l2transactioncount 里。
-    只检查实际生效的常量,注释里为说明缘由而提到旧周期名是允许的。
+    它本来就是日级、历史长,且不需要 Level2 权限,所以排在
+    l2transactioncount(盘中累计值、需 Level2)之前。
     """
-    assert qmt.FLOW_PERIOD == "l2transactioncount"
+    assert qmt.FLOW_PERIODS[0] == "transactioncount1d"
+    assert "l2transactioncount" in qmt.FLOW_PERIODS
+
+
+def test_fetch_flows_falls_back_to_l2(qmt, ctx_data):
+    """首选周期取不到时要退到 l2transactioncount,而不是当成没有资金流。"""
+    b, f, d = ctx_data
+    C = MinimalContext(b, f, d, flow_period="l2transactioncount")
+    qmt._FLOW_PERIOD = None
+    flows = qmt._fetch_flows(C, list(b))
+    assert set(flows) == set(b)
+    assert C.flow_periods_tried == ["transactioncount1d", "l2transactioncount"]
+    assert qmt._FLOW_PERIOD == "l2transactioncount"
+
+
+def test_fetch_flows_pins_period_after_probe(qmt, ctx_data):
+    """探到可用周期后就固定下来,后续批次不再把另一个周期重试一遍。"""
+    b, f, d = ctx_data
+    C = MinimalContext(b, f, d, flow_period="l2transactioncount")
+    qmt._FLOW_PERIOD = None
+    qmt._fetch_flows(C, list(b))
+    C.flow_periods_tried = []
+    qmt._fetch_flows(C, list(b))
+    assert C.flow_periods_tried == ["l2transactioncount"]
+
+
+def test_fetch_flows_empty_when_no_period_works(qmt, ctx_data):
+    """两个周期都取不到时返回空,由上层保证「缺数据不入选」。"""
+    b, f, d = ctx_data
+    C = MinimalContext(b, f, d, flow_period="__none__")
+    qmt._FLOW_PERIOD = None
+    assert qmt._fetch_flows(C, list(b)) == {}
+    assert C.flow_periods_tried == list(qmt.FLOW_PERIODS)
+
+
+def test_init_resets_probed_flow_period(qmt, ctx_data):
+    """重跑时必须重新探测周期,不能沿用上一轮(可能换了行情权限/数据源)。"""
+    b, f, d = ctx_data
+    qmt._FLOW_PERIOD = "l2transactioncount"
+    qmt.init(MinimalContext(b, f, d))
+    assert qmt._FLOW_PERIOD in (None, "transactioncount1d")
 
 
 def test_normalize_flow_takes_last_per_day(qmt):

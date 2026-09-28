@@ -24,11 +24,13 @@
   init 里取好股票池,handlebar 扫描并打印当日入选股票。
 
 【资金流数据】
-  内置 API 的周期列表里没有 transactioncount1d(那是 xtdata 侧的周期)。
-  bidMostAmount / offMostAmount 只能走 'l2transactioncount'
-  —— Level2 逐笔成交统计,需 Level2 权限,且是盘中累计值,
-  本文件按日取末值汇总为当日口径。
-  取不到时该股一律不入选,不把缺数据当成「有流入」放过。
+  bidMostAmount / offMostAmount 按 FLOW_PERIODS 的顺序试:
+    transactioncount1d  逐笔成交统计(日级)—— 已是日频、历史长,优先用;
+    l2transactioncount  Level2 大单统计 —— 需 Level2 权限,盘中累计值,兜底用。
+  官方数据字典里这两个周期都可以传给内置 get_market_data_ex
+  (get_market_data_ex 条目下的周期枚举只列了K线周期,特色数据另见数据字典)。
+  第一批探到哪个周期有数据就固定用它,之后不再重试另一个。
+  两个都取不到时该股一律不入选,不把缺数据当成「有流入」放过。
 
 【与 Python 版的一致性】
   本文件的纯计算函数与 ema_strategy 包逐位对齐,由 tests/test_qmt_port.py 校验。
@@ -52,10 +54,12 @@ PRINT_LIMIT = 50             # 每日最多打印多少只
 SCAN_EVERY_BAR = False       # False=只在最新K线选股(实盘);True=每根K线都扫(回测逐日输出)
 BATCH_SIZE = 50              # 每批处理多少只。调小=进度更密、更早看到是否卡住
 PROBE_FIRST = True           # 先跑一批测速并给出全量预估,再决定要不要等下去
-# 内置 API 没有 transactioncount1d(那是 xtdata 侧的周期);
-# bidMostAmount/offMostAmount 只在 Level2 大单统计里,且是盘中累计值。
-FLOW_PERIOD = 'l2transactioncount'
-FLOW_BARS_PER_DAY = 1        # L2 每日约多少条。取不满时按日取末值仍然正确,只是多取些
+# 资金流周期,按顺序试,第一个取到 bidMostAmount/offMostAmount 的就固定下来。
+# transactioncount1d 是日级、历史长,优先;l2transactioncount 需 Level2 权限、
+# 是盘中累计值,作为兜底(按日取末值归到当日口径)。
+FLOW_PERIODS = ('transactioncount1d', 'l2transactioncount')
+# 各周期每日约几条:日级 1 条;L2 是盘中累计,多取几条按日取末值也不改口径。
+FLOW_BARS_PER_DAY = {'transactioncount1d': 1, 'l2transactioncount': 1}
 
 
 # ------------------------------------------------------- 纯计算(与Python版一致)
@@ -246,9 +250,10 @@ def _profit_ratio(bars, float_shares):
 
 
 def _normalize_flow(df):
-    """把 Level2 大单统计归到日频:索引转日期,同日多条取末值。
+    """把资金流数据归到日频:索引转日期,同日多条取末值。
 
-    l2transactioncount 是盘中累计值,一天可能有多条;
+    transactioncount1d 本来就一天一条,groupby 是恒等变换;
+    l2transactioncount 是盘中累计值,一天可能有多条,
     当日口径取收盘时的累计值,即同日最后一条。
     """
     if df is None or len(df) == 0:
@@ -349,11 +354,13 @@ _UNIVERSE = []
 _PICKS_BY_DAY = {}        # 回测缓存:{日期: [入选记录]},整段只算一次
 _SCANNED = False
 _FLOAT_SHARES = {}        # init 里顺手存下,避免扫描时再次调 get_instrument_detail
+_FLOW_PERIOD = None       # 探测到的可用资金流周期;None=还没探过
 
 
 def init(C):
-    global _UNIVERSE, _PICKS_BY_DAY, _SCANNED, _FLOAT_SHARES
+    global _UNIVERSE, _PICKS_BY_DAY, _SCANNED, _FLOAT_SHARES, _FLOW_PERIOD
     _UNIVERSE = []
+    _FLOW_PERIOD = None      # 重跑时重新探测,别沿用上一轮的周期
     _PICKS_BY_DAY = {}
     _FLOAT_SHARES = {}
     _SCANNED = False          # 重跑时必须清掉,否则沿用上一轮的结果
@@ -437,6 +444,46 @@ def _bar_date(C):
         return ''
 
 
+def _fetch_flows(C, chunk, verbose=False):
+    """取一批股票的资金流,返回 {code: 日频DataFrame}。
+
+    FLOW_PERIODS 里按顺序试,第一个真正取到 bidMostAmount/offMostAmount 的
+    周期记进 _FLOW_PERIOD,之后只用它 —— 每批都把两个周期都试一遍太慢。
+    两个都取不到就返回空字典,对应的股票一律不入选。
+    """
+    global _FLOW_PERIOD
+    periods = (_FLOW_PERIOD,) if _FLOW_PERIOD else FLOW_PERIODS
+    for period in periods:
+        try:
+            raw = C.get_market_data_ex(
+                ['bidMostAmount', 'offMostAmount'], chunk,
+                period=period,
+                count=HISTORY_BARS * FLOW_BARS_PER_DAY.get(period, 1),
+                fill_data=False, subscribe=False) or {}
+        except Exception as e:
+            if verbose:
+                print('资金流周期 %s 取数失败:%s' % (period, e))
+            continue
+        flows = {}
+        for c, v in raw.items():
+            nv = _normalize_flow(v)
+            if nv is not None:
+                flows[c] = nv
+        if flows:
+            if _FLOW_PERIOD != period:
+                _FLOW_PERIOD = period
+                if verbose:
+                    print('资金流数据源:%s(取到 %d/%d 只)'
+                          % (period, len(flows), len(chunk)))
+            return flows
+        if verbose:
+            print('资金流周期 %s 无数据,换下一个' % period)
+    if verbose:
+        print('资金流全部周期都取不到(transactioncount1d 需投研版,'
+              'l2transactioncount 需Level2权限)—— 本批一律不入选')
+    return {}
+
+
 def _scan_all(C, codes, verbose=True):
     """对股票池整段扫描一次,返回 {日期字符串: [入选记录, ...]}。
 
@@ -469,18 +516,7 @@ def _scan_all(C, codes, verbose=True):
         t_bars = time.time() - t0
 
         t0 = time.time()
-        try:
-            raw_flows = C.get_market_data_ex(
-                ['bidMostAmount', 'offMostAmount'], chunk,
-                period=FLOW_PERIOD, count=HISTORY_BARS * FLOW_BARS_PER_DAY,
-                fill_data=False, subscribe=False) or {}
-            flows = {}
-            for c, v in raw_flows.items():
-                nv = _normalize_flow(v)
-                if nv is not None:
-                    flows[c] = nv
-        except Exception:
-            flows = {}          # 无 Level2 权限时取不到,下面一律不触发
+        flows = _fetch_flows(C, chunk, verbose=verbose and i == 0)
         t_flow = time.time() - t0
         t0 = time.time()
 
