@@ -311,3 +311,36 @@ def test_scan_cache_resets_on_init(qmt, ctx_data):
     qmt.init(C)
     assert qmt._SCANNED is False
     assert qmt._PICKS_BY_DAY == {}
+
+
+def test_float_shares_cached_in_init(qmt, ctx_data):
+    """init 应顺手存下流通股本,扫描时不再重复调 get_instrument_detail。
+
+    全市场近 5000 只,重复调用就是近万次。
+    """
+    b, f, d = ctx_data
+    calls = {"n": 0}
+
+    class CountingContext(MinimalContext):
+        def get_instrument_detail(self, code, iscomplete=False):
+            calls["n"] += 1
+            return self._details.get(code)
+
+    C = CountingContext(b, f, d)
+    qmt.init(C)
+    after_init = calls["n"]
+    assert after_init == len(b)              # init 每只票一次
+
+    qmt._scan_all(C, list(b), verbose=False)
+    assert calls["n"] == after_init          # 扫描阶段不再调用
+    assert qmt._FLOAT_SHARES                 # 且确实缓存下来了
+
+
+def test_universe_excludes_missing_float_shares(qmt, bars):
+    """取不到流通股本的票直接剔出股票池,而不是扫描时才发现。"""
+    code = "999999.SZ"
+    b = {code: bars}
+    d = {code: {"InstrumentName": "无股本", "OpenDate": "20100101"}}   # 无 FloatVolume
+    C = MinimalContext(b, {}, d)
+    qmt.init(C)
+    assert code not in qmt._UNIVERSE

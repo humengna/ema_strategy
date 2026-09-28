@@ -42,6 +42,8 @@ EXCLUDE_ST = True
 MIN_LISTED_DAYS = 120
 PRINT_LIMIT = 50             # 每日最多打印多少只
 SCAN_EVERY_BAR = False       # False=只在最新K线选股(实盘);True=每根K线都扫(回测逐日输出)
+BATCH_SIZE = 50              # 每批处理多少只。调小=进度更密、更早看到是否卡住
+PROBE_FIRST = True           # 先跑一批测速并给出全量预估,再决定要不要等下去
 
 
 # ------------------------------------------------------- 纯计算(与Python版一致)
@@ -302,12 +304,14 @@ def evaluate_one(bars, float_shares, flow):
 _UNIVERSE = []
 _PICKS_BY_DAY = {}        # 回测缓存:{日期: [入选记录]},整段只算一次
 _SCANNED = False
+_FLOAT_SHARES = {}        # init 里顺手存下,避免扫描时再次调 get_instrument_detail
 
 
 def init(C):
-    global _UNIVERSE, _PICKS_BY_DAY, _SCANNED
+    global _UNIVERSE, _PICKS_BY_DAY, _SCANNED, _FLOAT_SHARES
     _UNIVERSE = []
     _PICKS_BY_DAY = {}
+    _FLOAT_SHARES = {}
     _SCANNED = False          # 重跑时必须清掉,否则沿用上一轮的结果
     try:
         codes = C.get_stock_list_in_sector(SECTOR) or []
@@ -337,6 +341,13 @@ def init(C):
                     continue
             except Exception:
                 pass
+        try:
+            fs = float(info.get('FloatVolume') or 0)
+        except Exception:
+            fs = 0.0
+        if fs <= 0:
+            continue                      # 无流通股本则筹码无从算起
+        _FLOAT_SHARES[code] = fs
         kept.append(code)
 
     _UNIVERSE = kept
@@ -377,16 +388,24 @@ def _bar_date(C):
         return ''
 
 
-def _scan_all(C, codes):
+def _scan_all(C, codes, verbose=True):
     """对股票池整段扫描一次,返回 {日期字符串: [入选记录, ...]}。
 
     这是回测提速的关键。原先 handlebar 每根K线都重算一遍全市场,
     一年 242 根K线 = 242 次全市场扫描;现在整段只算一次,
     之后每根K线只做一次字典查表。实测差约两个数量级。
+
+    分批打印各阶段耗时与预计剩余 —— 全市场要跑好几分钟,
+    没有进度就分不清是在算还是卡死了。
     """
+    import time
     by_day = {}
-    for i in range(0, len(codes), 200):
-        chunk = codes[i:i + 200]
+    t_start = time.time()
+    n_hit = 0
+
+    for i in range(0, len(codes), BATCH_SIZE):
+        chunk = codes[i:i + BATCH_SIZE]
+        t0 = time.time()
         try:
             data = C.get_market_data_ex(
                 ['open', 'high', 'low', 'close', 'volume', 'amount'],
@@ -395,7 +414,9 @@ def _scan_all(C, codes):
         except Exception as e:
             print('取行情失败:%s' % e)
             continue
+        t_bars = time.time() - t0
 
+        t0 = time.time()
         try:
             flows = C.get_market_data_ex(
                 ['bidMostAmount', 'offMostAmount'], chunk,
@@ -403,16 +424,17 @@ def _scan_all(C, codes):
                 fill_data=False) or {}
         except Exception:
             flows = {}          # 无投研版/L2权限时取不到,下面一律不触发
+        t_flow = time.time() - t0
+        t0 = time.time()
 
         for code in chunk:
             bars = data.get(code)
             if bars is None or len(bars) < SLOW + 5:
                 continue
+            fs = _FLOAT_SHARES.get(code, 0.0)
+            if fs <= 0:
+                continue
             try:
-                info = C.get_instrument_detail(code)
-                fs = float(info.get('FloatVolume') or 0) if info else 0.0
-                if fs <= 0:
-                    continue
                 res = evaluate_series(bars, fs, flows.get(code))
                 hits = res[res['triggered']]
                 for ts, row in hits.iterrows():
@@ -425,9 +447,17 @@ def _scan_all(C, codes):
                     })
             except Exception as e:
                 print('%s 计算失败:%s' % (code, e))
+        t_calc = time.time() - t0
 
-        if len(codes) > 200:
-            print('  已扫描 %d/%d' % (min(i + 200, len(codes)), len(codes)))
+        if verbose:
+            done = min(i + BATCH_SIZE, len(codes))
+            elapsed = time.time() - t_start
+            eta = elapsed / done * (len(codes) - done) if done else 0
+            n_hit = sum(len(v) for v in by_day.values())
+            print('  [%d/%d] 行情%.1fs 资金流%.1fs 计算%.1fs | 累计命中%d | '
+                  '已用%.1fmin 预计还需%.1fmin'
+                  % (done, len(codes), t_bars, t_flow, t_calc, n_hit,
+                     elapsed / 60.0, eta / 60.0))
     return by_day
 
 
@@ -446,6 +476,15 @@ def handlebar(C):
     if SCAN_EVERY_BAR:
         # 回测:整段只扫一次,之后每根K线查表
         if not _SCANNED:
+            if PROBE_FIRST and len(codes) > BATCH_SIZE:
+                # 先跑一批,立刻给出全量耗时预估 —— 避免傻等几分钟才知道要跑多久
+                import time
+                t0 = time.time()
+                _scan_all(C, codes[:BATCH_SIZE], verbose=False)
+                per = (time.time() - t0) / BATCH_SIZE
+                print('测速:%d 只用时 %.1fs,全量 %d 只预计约 %.1f 分钟'
+                      % (BATCH_SIZE, per * BATCH_SIZE, len(codes),
+                         per * len(codes) / 60.0))
             print('整段扫描中(只做一次)...')
             _PICKS_BY_DAY = _scan_all(C, codes)
             _SCANNED = True
