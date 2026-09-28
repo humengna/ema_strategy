@@ -83,6 +83,48 @@ python scripts/backtest.py --csv-dir tests          # 用本地CSV,不依赖 QMT
 python scripts/backtest.py --limit 100              # 先跑 100 只
 ```
 
+### 本地缓存:别每次回测都重新取数
+
+全市场 4992 只跑一轮,取数占 59%(行情 42s + 资金流/股本 265s),
+而这些数据每次都一模一样。`scripts/build_cache.py` 把它们存成 Parquet,
+之后回测加 `--cache` 直接读盘。
+
+```bash
+# 1. 首次建缓存(慢的那一次,跑完就不用再等了)
+python scripts/build_cache.py --start 20230101 --end 20260928
+
+# 2. 之后每天补最新几天(秒级)
+python scripts/build_cache.py --end 20260929
+
+# 3. 回测走缓存
+python scripts/backtest.py --strategy bull --start 20240101 --end 20260928 --cache cache
+python scripts/backtest.py ... --cache cache --offline   # 完全不碰 QMT
+
+# 看缓存现状 / 抽样校验缓存没过期
+python scripts/build_cache.py --status
+python scripts/build_cache.py --verify 50
+```
+
+`--cache` 同样支持 `backtest_portfolio.py` 与 `check_one.py`。
+
+实测(1000 只、420 根日线,取数延迟按实际 QMT 标定):**86.5s → 21.3s,4.1 倍**,
+两边选出的信号逐行相同。每批耗时从 `行情1.7s 资金流+股本10.6s 计算5.3s`
+变成 `行情0.2s 资金流+股本0.1s 计算3.9s`。
+
+几个必须知道的点:
+
+- **后复权才能安全增量追加**。后复权把复权因子累乘到未来,历史价格不随
+  新的除权变化;前复权每次除权都重刷整段历史,既是未来函数也没法增量。
+  缓存把 `dividend_type` 记在 `_meta.json` 里,换了口径直接拒绝加载。
+- **判断「缺哪一段」看的是问到哪天,不是有数据到哪天**。停牌的票、周末、
+  当天尚未收盘都会「问过了但没数据」;按数据末日判,这些空尾巴会被每次
+  回测重新问一遍。水位线记在 `_asked.parquet`。
+- **获利筹码也缓存**(`--no-profit-cache` 可关)。筹码分布完全由
+  (收盘价序列, 流通股本, 计算参数) 决定,指纹任一项变了就整只重算。
+  改 `--profit-min` 这种纯阈值参数不会让它失效。
+- **缓存不等于正确**。数据源会事后修订,所以留了 `--verify N`:抽样重取、
+  与缓存逐格比对,对不上就报出来。有疑问先跑它,别拿对不上的数据出结论。
+
 ### 查单只股票某天是否入选
 
 `scripts/check_one.py` 的默认参数就是最终敲定的那一版口径(均线转向、
@@ -232,7 +274,7 @@ print(es.explain("000001.SZ", bars))        # 逐条诊断
 python -m pytest
 ```
 
-256 项测试,不需要 QMT 环境。测试数据取自 matplotlib/mplfinance 仓库的公开示例
+296 项测试,不需要 QMT 环境。测试数据取自 matplotlib/mplfinance 仓库的公开示例
 (BSD 许可),选它们是为了让全部测试在任何平台都能跑通。
 
 覆盖:K线分类的四种情形与取等号边界、金叉/死叉、三金叉序列的顺序不变量、

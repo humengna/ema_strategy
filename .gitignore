@@ -9,3 +9,7 @@ venv/
 .vscode/
 picks*.csv
 backtest_events.csv
+
+# 本地 Parquet 缓存,几百 MB,不入库
+cache/
+*.parquet

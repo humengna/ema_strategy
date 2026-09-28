@@ -1,4 +1,6 @@
 pandas>=2.0
 numpy>=1.24
+# 本地 Parquet 缓存(scripts/build_cache.py 与 --cache);不装也能跑,只是每次都要重新取数
+pyarrow>=12.0
 # 行情数据源(仅 Windows + QMT 客户端环境需要;测试不依赖)
 # xtquant>=250807.1.2

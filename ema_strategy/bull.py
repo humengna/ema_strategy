@@ -141,16 +141,43 @@ def recent_pullback(daily: pd.DataFrame, window: int) -> pd.Series:
     return pd.Series(out, index=daily.index, name="recent_pullback")
 
 
+MA_COLS = ("ma_f", "ma_m", "ma_s")
+
+
+def _ma_moves(daily: pd.DataFrame) -> tuple:
+    """一次算出三条均线的逐日涨/跌/可比标记,给 all_ma_rising 与 ma_turn_up 共用。
+
+    原先各自用 pandas 的 shift/notna/concat 拼,两个函数合计 4.9ms/只;
+    全市场一轮就是 25s。改成一次 to_numpy 再做整块比较后降到 0.5ms 以内。
+    语义不变:NaN 参与的比较一律 False,与 pandas 的 `>` / `<` 一致。
+    """
+    vals = daily.loc[:, list(MA_COLS)].to_numpy(dtype="float64")
+    n = len(vals)
+    up = np.zeros(n, dtype=bool)
+    down = np.zeros(n, dtype=bool)
+    if n < 2:
+        return up, down, np.zeros(n, dtype=bool)
+
+    cur, prev = vals[1:], vals[:-1]
+    ok = ~np.isnan(cur) & ~np.isnan(prev)
+    up[1:] = ((cur > prev) & ok).all(axis=1)
+    down[1:] = ((cur < prev) & ok).any(axis=1)
+
+    # 前一日的「有下行」要能判定,得往前数两根都有值
+    prev2_valid = np.zeros(n, dtype=bool)
+    if n >= 3:
+        prev2_valid[2:] = (~np.isnan(vals[:-2])).all(axis=1)
+    return up, down, prev2_valid
+
+
 def all_ma_rising(daily: pd.DataFrame) -> pd.Series:
     """三条均线当日是否均较前一日上行。
 
     与要点9(只要求 MA30 上行)不同,这里要求 MA5/MA10/MA30 同时上行,
     是更强的趋势确认。均线为 NaN 的预热期一律判 False。
     """
-    cols = ("ma_f", "ma_m", "ma_s")
-    rising = [(daily[c] > daily[c].shift(1)) & daily[c].notna() & daily[c].shift(1).notna()
-              for c in cols]
-    return rising[0] & rising[1] & rising[2]
+    up, _, _ = _ma_moves(daily)
+    return pd.Series(up, index=daily.index)
 
 
 def ma_turn_up(daily: pd.DataFrame) -> pd.Series:
@@ -162,10 +189,10 @@ def ma_turn_up(daily: pd.DataFrame) -> pd.Series:
     「至少一条向下」按字面取严格小于;走平(相等)不算向下,
     故走平转全上行不会被判为转向。
     """
-    cols = ("ma_f", "ma_m", "ma_s")
-    any_down = pd.concat([daily[c] < daily[c].shift(1) for c in cols], axis=1).any(axis=1)
-    prev_valid = pd.concat([daily[c].shift(2).notna() for c in cols], axis=1).all(axis=1)
-    return all_ma_rising(daily) & any_down.shift(1, fill_value=False) & prev_valid
+    up, down, prev2_valid = _ma_moves(daily)
+    prev_down = np.zeros(len(up), dtype=bool)
+    prev_down[1:] = down[:-1]
+    return pd.Series(up & prev_down & prev2_valid, index=daily.index)
 
 
 def volume_surge(volume: pd.Series, window: int, ratio: float,
@@ -236,9 +263,14 @@ def run(bars: pd.DataFrame, float_shares: float | pd.Series,
     daily["vol_surge"] = volume_surge(bars["volume"], p.volume_window,
                                       p.volume_ratio, p.volume_mode)
 
-    daily["pullback_day"] = pullback_days(daily)
-    daily["recent_pullback"] = recent_pullback(daily, p.pullback_window)
-    daily["cond_pullback"] = daily["recent_pullback"] if p.require_pullback else True
+    if p.require_pullback:
+        daily["pullback_day"] = pullback_days(daily)
+        daily["recent_pullback"] = recent_pullback(daily, p.pullback_window)
+        daily["cond_pullback"] = daily["recent_pullback"]
+    else:
+        # 关掉回踩时这两列没人看,但各自都是一遍逐日 Python 循环
+        # (合计 3.4ms/只,全市场一轮 17s),不能白算
+        daily["cond_pullback"] = True
     daily["ma_up"] = all_ma_rising(daily)
     daily["ma_turn"] = ma_turn_up(daily)
     if p.require_ma_turn:

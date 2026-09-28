@@ -28,6 +28,8 @@ from ema_strategy import feed                                   # noqa: E402
 from ema_strategy.io_utils import safe_to_csv                   # noqa: E402
 from ema_strategy.bull import BullParams                        # noqa: E402
 from ema_strategy.bull import run as bull_run                   # noqa: E402
+from ema_strategy import cached_feed                            # noqa: E402
+from ema_strategy.store import ParquetStore                     # noqa: E402
 from ema_strategy.portfolio import PortfolioParams, metrics, simulate   # noqa: E402
 from ema_strategy.rebalance import RebalanceParams                      # noqa: E402
 from ema_strategy.rebalance import report_metrics as rb_metrics         # noqa: E402
@@ -39,12 +41,16 @@ MIN_UNIVERSE = 30
 
 
 def build_signals(code: str, bars: pd.DataFrame, strategy: str, float_shares: float,
-                  flow, p_bull: BullParams, p_seq: SeqParams):
-    """返回 (触发序列, 排序分, 次日可成交标志)。"""
+                  flow, p_bull: BullParams, p_seq: SeqParams, profit_series=None):
+    """返回 (触发序列, 排序分, 次日可成交标志)。
+
+    profit_series 命中缓存时直接传进来,省掉筹码分布那一大块计算。
+    """
     if strategy == "bull":
         if not float_shares or float_shares <= 0:
             return None
-        daily = bull_run(bars, float_shares, flow, p_bull)["daily"]
+        daily = bull_run(bars, float_shares, flow, p_bull,
+                         profit_series=profit_series)["daily"]
         sig, score = daily["triggered"], daily["profit_ratio"].fillna(0.0)
     else:
         daily = cross_run(bars[feed.PRICE_COLS], p_seq)["daily"]
@@ -168,6 +174,10 @@ def main(argv=None) -> int:
     ap.add_argument("--no-download", action="store_true", dest="no_download",
                     help="跳过下载,直接读 QMT 本地缓存(数据已下过时用,快很多)")
     ap.add_argument("--csv-dir", default="", dest="csv_dir")
+    ap.add_argument("--cache", default="", metavar="DIR",
+                    help="走本地 Parquet 缓存(先用 scripts/build_cache.py 建好)")
+    ap.add_argument("--offline", action="store_true",
+                    help="配合 --cache:完全不碰 QMT,缓存里没有的票直接跳过")
     ap.add_argument("--allow-same-day", action="store_true", dest="allow_same_day",
                     help="允许两个金叉同日(默认要求三个金叉分属不同交易日)")
     ap.add_argument("--ma-turn", action="store_true", dest="ma_turn",
@@ -207,7 +217,8 @@ def main(argv=None) -> int:
     bars_by_code, sigs, scores, oks = {}, {}, {}, {}
     no_flow = 0
 
-    def handle(code: str, bars: pd.DataFrame, float_shares: float, flow) -> None:
+    def handle(code: str, bars: pd.DataFrame, float_shares: float, flow,
+               profit_series=None) -> None:
         nonlocal no_flow
         if a.strategy == "bull" and flow is None:
             if not a.no_flow:
@@ -218,7 +229,8 @@ def main(argv=None) -> int:
         need = a.hold if a.mode == "rolling" else a.freq_days + a.lookback
         if len(bars) < (p_bull.warmup if a.strategy == "bull" else p_seq.warmup) + need + 2:
             return
-        built = build_signals(code, bars, a.strategy, float_shares, flow, p_bull, p_seq)
+        built = build_signals(code, bars, a.strategy, float_shares, flow, p_bull,
+                              p_seq, profit_series=profit_series)
         if built is None:
             return
         sig, score, ok = built
@@ -238,38 +250,66 @@ def main(argv=None) -> int:
                 d["amount"] = d["close"] * d["volume"]
             handle(code, d, 1e9, None)
     else:
+        store = ParquetStore(a.cache, dividend_type="back") if a.cache else None
+        resolver = (cached_feed.ProfitResolver(store, p_bull)
+                    if store is not None and a.strategy == "bull" else None)
         codes = ([c.strip() for c in a.codes.split(",") if c.strip()] if a.codes
-                 else feed.fetch_universe(a.sector, asof=a.end or None))
+                 else (cached_feed.fetch_universe(store, a.sector, asof=a.end or None,
+                                                  offline=a.offline)
+                       if store is not None
+                       else feed.fetch_universe(a.sector, asof=a.end or None)))
         if a.limit:
             codes = codes[:a.limit]
         mode_desc = (f"每 {a.freq_days} 日整体换仓,回看 {a.lookback} 日"
                      if a.mode == "rebalance" else f"每票滚动持有 {a.hold} 日")
         print(f"标的 {len(codes)} 只 | 策略 {a.strategy} | {mode_desc}")
-        print("跳过下载,直接读 QMT 本地缓存" if a.no_download
-              else "将下载缺失的历史数据(首次较慢;数据已下过可加 --no-download)")
+        if store is not None:
+            print(f"走本地缓存 {store.root}"
+                  + ("(离线,不碰 QMT)" if a.offline else "(缺的那段会向 QMT 补取)"))
+        else:
+            print("跳过下载,直接读 QMT 本地缓存" if a.no_download
+                  else "将下载缺失的历史数据(首次较慢;数据已下过可加 --no-download)")
 
         t_start = time.perf_counter()
         for i in range(0, len(codes), 200):
             chunk = codes[i:i + 200]
             t0 = time.perf_counter()
             try:
-                data = feed.fetch_daily(chunk, a.start, a.end,
-                                        download=not a.no_download)
+                if store is not None:
+                    data = cached_feed.fetch_daily(store, chunk, a.start, a.end,
+                                                   download=not a.no_download,
+                                                   verbose=(i == 0), offline=a.offline)
+                else:
+                    data = feed.fetch_daily(chunk, a.start, a.end,
+                                            download=not a.no_download)
             except Exception as exc:
                 print(f"    行情批次失败:{type(exc).__name__}: {exc}", file=sys.stderr)
                 continue
             t_bars = time.perf_counter() - t0
 
             t0 = time.perf_counter()
-            flows = (feed.fetch_money_flow(chunk, a.start, a.end, verbose=(i == 0),
-                                           download=not a.no_download)
-                     if a.strategy == "bull" and not a.no_flow else {})
-            floats = feed.fetch_float_shares(chunk) if a.strategy == "bull" else {}
+            want_flow = a.strategy == "bull" and not a.no_flow
+            if store is not None:
+                flows = (cached_feed.fetch_money_flow(store, chunk, a.start, a.end,
+                                                      download=not a.no_download,
+                                                      verbose=(i == 0),
+                                                      offline=a.offline)
+                         if want_flow else {})
+                floats = (cached_feed.fetch_float_shares(store, chunk, verbose=(i == 0),
+                                                         offline=a.offline)
+                          if a.strategy == "bull" else {})
+            else:
+                flows = (feed.fetch_money_flow(chunk, a.start, a.end, verbose=(i == 0),
+                                               download=not a.no_download)
+                         if want_flow else {})
+                floats = feed.fetch_float_shares(chunk) if a.strategy == "bull" else {}
             t_aux = time.perf_counter() - t0
 
             t0 = time.perf_counter()
             for code, bars in data.items():
-                handle(code, bars, floats.get(code, 0.0), flows.get(code))
+                fs = floats.get(code, 0.0)
+                ps = resolver.get(code, bars, fs) if resolver is not None else None
+                handle(code, bars, fs, flows.get(code), profit_series=ps)
             t_calc = time.perf_counter() - t0
 
             done = i + len(chunk)
@@ -278,6 +318,9 @@ def main(argv=None) -> int:
             print(f"  [{done}/{len(codes)}] 取行情 {t_bars:.1f}s | "
                   f"资金流+股本 {t_aux:.1f}s | 算指标 {t_calc:.1f}s | "
                   f"已用 {elapsed / 60:.1f}min,预计还需 {eta / 60:.1f}min", flush=True)
+
+        if resolver is not None:
+            resolver.flush()
 
     if no_flow:
         print(f"\n跳过 {no_flow} 只:无资金流数据。无投研版/Level2权限时可加 --no-flow "

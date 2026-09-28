@@ -27,7 +27,9 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from ema_strategy import cached_feed               # noqa: E402
 from ema_strategy import feed                      # noqa: E402
+from ema_strategy.store import ParquetStore        # noqa: E402
 from ema_strategy.bull import BullParams, run      # noqa: E402
 from ema_strategy.bull_picker import explain       # noqa: E402
 from ema_strategy.sequence import Params           # noqa: E402
@@ -65,6 +67,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="复权方式;信号判定必须 back,否则历史会 repaint")
     ap.add_argument("--no-download", action="store_true", dest="no_download",
                     help="跳过下载,直接读 QMT 本地缓存")
+    ap.add_argument("--cache", default="", metavar="DIR",
+                    help="走本地 Parquet 缓存(先用 scripts/build_cache.py 建好)")
+    ap.add_argument("--offline", action="store_true",
+                    help="配合 --cache:完全不碰 QMT")
     ap.add_argument("--float-shares", type=float, default=0.0, dest="float_shares",
                     help="手工指定流通股本(股);--csv 模式下必填或用默认 1e9")
     ap.add_argument("--verify", action="store_true",
@@ -116,21 +122,41 @@ def load_flow_csv(path: str) -> pd.DataFrame:
 
 
 def load_qmt(code: str, start: str, end: str, a) -> tuple:
-    """从 QMT 取行情 / 流通股本 / 资金流。返回 (bars, float_shares, flow)。"""
-    bars = feed.fetch_daily([code], start, end, dividend_type=a.dividend,
-                            download=not a.no_download).get(code)
+    """取行情 / 流通股本 / 资金流。给了 --cache 就先读缓存。
+
+    返回 (bars, float_shares, flow)。
+    """
+    store = ParquetStore(a.cache, dividend_type=a.dividend) if a.cache else None
+    if store is not None:
+        bars = cached_feed.fetch_daily(store, [code], start, end,
+                                       dividend_type=a.dividend,
+                                       download=not a.no_download,
+                                       verbose=False, offline=a.offline).get(code)
+    else:
+        bars = feed.fetch_daily([code], start, end, dividend_type=a.dividend,
+                                download=not a.no_download).get(code)
     if bars is None or not len(bars):
-        raise SystemExit(f"{code}: {start}~{end} 无行情数据")
+        raise SystemExit(f"{code}: {start}~{end} 无行情数据"
+                         + ("(缓存里没有;去掉 --offline 或先跑 build_cache.py)"
+                            if a.cache and a.offline else ""))
 
     fs = a.float_shares
     if fs <= 0:
-        fs = feed.fetch_float_shares([code]).get(code, 0.0)
+        fs = (cached_feed.fetch_float_shares(store, [code], verbose=False,
+                                             offline=a.offline).get(code, 0.0)
+              if store is not None else feed.fetch_float_shares([code]).get(code, 0.0))
     if fs <= 0:
         raise SystemExit(f"{code}: 取不到流通股本,获利筹码无从算起"
                          f"(可用 --float-shares 手工指定)")
 
-    flow = feed.fetch_money_flow([code], start, end,
-                                 download=not a.no_download).get(code)
+    if store is not None:
+        flow = cached_feed.fetch_money_flow(store, [code], start, end,
+                                            download=not a.no_download,
+                                            verbose=False,
+                                            offline=a.offline).get(code)
+    else:
+        flow = feed.fetch_money_flow([code], start, end,
+                                     download=not a.no_download).get(code)
     if flow is None:
         print(f"[!] {code} 取不到资金流(bidMostAmount/offMostAmount)。"
               f"该条件恒不通过,任何一天都不会入选 —— 缺数据不当成有流入。",
