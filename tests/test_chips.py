@@ -149,3 +149,102 @@ def test_triangle_normalized():
 def test_triangle_single_bin():
     from ema_strategy.chips import _triangle
     assert _triangle(np.array([10.0]), 10.0, 10.0, 10.0).tolist() == [1.0]
+
+
+# ============================================================ 续算等价性
+# 筹码分布是逐日向前滚的状态。把状态存下来续算,一旦有半点对不上
+# 就是「看不出错的错值」—— 所以这里用随机序列 x 随机切点做穷举式比对。
+def _mk_chip_bars(n, seed, bad_frac=0.0, nan_head=0, zero_vol=False):
+    rng = np.random.default_rng(seed)
+    close = 10 * np.cumprod(1 + rng.normal(0, 0.03, n))
+    vol = rng.integers(0, 2e5, n).astype(float)
+    if zero_vol:
+        vol[:] = 0.0
+    idx = pd.bdate_range("2024-01-01", periods=n)
+    b = pd.DataFrame({"high": close * 1.02, "low": close * 0.98, "close": close,
+                      "volume": vol, "amount": close * vol * 100}, index=idx)
+    if bad_frac:                        # 掺进坏K线(high 缺失)
+        k = rng.choice(n, int(n * bad_frac), replace=False)
+        b.iloc[k, b.columns.get_loc("high")] = np.nan
+    if nan_head:                        # 开头没有有效收盘价,网格锚点靠后
+        b.iloc[:nan_head, b.columns.get_loc("close")] = np.nan
+    return b
+
+
+@pytest.mark.parametrize("bad_frac", [0.0, 0.1, 0.5])
+@pytest.mark.parametrize("nan_head", [0, 1, 3, 10])
+def test_resume_equals_full_recomputation(bad_frac, nan_head):
+    """任意切点处分两段续算,结果必须与整段重算逐格相同。"""
+    from ema_strategy.chips import profit_ratio_resumable
+    rng = np.random.default_rng(hash((bad_frac, nan_head)) % 2**32)
+    for seed in range(6):
+        n = int(rng.integers(40, 200))
+        b = _mk_chip_bars(n, seed, bad_frac, nan_head)
+        full = profit_ratio(b, 1e9).to_numpy()
+        # 把边界切点都覆盖到:0、1、锚点前后、末尾
+        for cut in sorted({0, 1, nan_head, nan_head + 1, n - 1, n,
+                           int(rng.integers(0, n + 1))}):
+            if not 0 <= cut <= n:
+                continue
+            s1, state = profit_ratio_resumable(b.iloc[:cut], 1e9)
+            s2, _ = profit_ratio_resumable(b.iloc[cut:], 1e9, state=state)
+            got = np.concatenate([s1.to_numpy(), s2.to_numpy()])
+            assert np.allclose(full, got, equal_nan=True), \
+                f"seed={seed} n={n} cut={cut} 续算与整段不一致"
+
+
+def test_resume_one_day_at_a_time():
+    """逐日追加(每天只加一根K线)不能累积误差 —— 这正是日常的用法。"""
+    from ema_strategy.chips import profit_ratio_resumable
+    b = _mk_chip_bars(120, 3)
+    full = profit_ratio(b, 1e9).to_numpy()
+
+    parts, state = [], None
+    for i in range(len(b)):
+        s, state = profit_ratio_resumable(b.iloc[i:i + 1], 1e9, state=state)
+        parts.append(s.to_numpy())
+    assert np.allclose(full, np.concatenate(parts), equal_nan=True)
+
+
+def test_resume_tracks_min_periods_across_segments():
+    """min_periods 按全序列位置数。状态里漏记 offset 会让 NaN 段短掉一截。"""
+    from ema_strategy.chips import profit_ratio_resumable
+    b = _mk_chip_bars(60, 11)
+    full = profit_ratio(b, 1e9, min_periods=30).to_numpy()
+    s1, state = profit_ratio_resumable(b.iloc[:20], 1e9, min_periods=30)
+    s2, _ = profit_ratio_resumable(b.iloc[20:], 1e9, min_periods=30, state=state)
+    got = np.concatenate([s1.to_numpy(), s2.to_numpy()])
+    assert np.isnan(got[:29]).all()
+    assert np.allclose(full, got, equal_nan=True)
+
+
+def test_state_keeps_only_the_active_range():
+    """状态只存活跃桶,不是整条网格 —— 否则 5000 只的检查点会大到没法用。"""
+    from ema_strategy.chips import _price_grid, profit_ratio_resumable
+    b = _mk_chip_bars(200, 4)
+    _, state = profit_ratio_resumable(b, 1e9)
+    _, centers = _price_grid(float(b["close"].iloc[0]), 0.002, 50.0)
+    assert len(state.dist) == state.hi_i - state.lo_i + 1
+    assert len(state.dist) < len(centers) / 2
+    assert state.offset == len(b)
+
+
+def test_bars_without_valid_close_are_excluded():
+    """收盘价无效的K线不计入分布,等价于压根没有这几行。
+
+    价格网格锚在首个有效收盘价上,锚点之前的K线没有自洽的位置可放;
+    原先它们仍按 high/low 计入分布,导致整段算与分两段续算对不上
+    (续算时前一段还没有锚点,那几根就丢了)。
+    """
+    from ema_strategy.chips import profit_ratio_resumable
+    b = _mk_chip_bars(80, 6, nan_head=5)
+
+    # min_periods=0 排除掉位置计数的影响,只比分布本身
+    with_head = profit_ratio(b, 1e9, min_periods=0).to_numpy()
+    without_head = profit_ratio(b.iloc[5:], 1e9, min_periods=0).to_numpy()
+    assert np.isnan(with_head[:5]).all()
+    assert np.allclose(with_head[5:], without_head, equal_nan=True)
+
+    # 那几根算「消费过」(offset 要走),但还没锚定网格
+    _, state = profit_ratio_resumable(b.iloc[:5], 1e9)
+    assert state.anchor is None and state.offset == 5

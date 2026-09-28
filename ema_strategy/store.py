@@ -352,6 +352,44 @@ class ProfitCache:
             out[str(code)] = (str(g["digest"].iloc[0]), s)
         return out
 
+    # ---------------------------------------------------------- 续算检查点
+    # 筹码分布是逐日向前滚的状态。把状态本身存下来,每天补一根K线时就能
+    # 接着往下滚,不必从头重算 400 根 —— 否则「缓存」只在参数和K线都没变时
+    # 才有意义,而每天补数据正好会让它全部失效。
+    @property
+    def _ckpt_path(self) -> str:
+        return os.path.join(self.dir, "checkpoint.parquet")
+
+    def load_checkpoints(self) -> dict:
+        """返回 {code: dict(...)}。参数不匹配时返回空。"""
+        if not self._valid_store() or not os.path.exists(self._ckpt_path):
+            return {}
+        df = pd.read_parquet(self._ckpt_path)
+        out = {}
+        for r in df.itertuples():
+            out[str(r.code)] = {
+                "anchor": (float(r.anchor) if pd.notna(r.anchor) else None),
+                "offset": int(r.offset), "lo_i": int(r.lo_i), "hi_i": int(r.hi_i),
+                "dist": np.asarray(r.dist, dtype="float64"),
+                "prefix_digest": str(r.prefix_digest),
+                "last_date": pd.Timestamp(r.last_date),
+            }
+        return out
+
+    def save_checkpoints(self, ckpts: dict) -> int:
+        if not ckpts:
+            return 0
+        os.makedirs(self.dir, exist_ok=True)
+        df = pd.DataFrame([{
+            "code": str(c), "anchor": v["anchor"], "offset": int(v["offset"]),
+            "lo_i": int(v["lo_i"]), "hi_i": int(v["hi_i"]),
+            "dist": np.asarray(v["dist"], dtype="float64").tolist(),
+            "prefix_digest": str(v["prefix_digest"]),
+            "last_date": pd.Timestamp(v["last_date"]),
+        } for c, v in ckpts.items()]).sort_values("code")
+        ParquetStore._atomic_write(df, self._ckpt_path)
+        return len(df)
+
     def save(self, entries: dict, verbose: bool = True) -> int:
         """entries: {code: (digest, Series)}。整体重写,不做合并。
 

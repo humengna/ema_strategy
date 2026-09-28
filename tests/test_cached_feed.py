@@ -168,15 +168,85 @@ def test_profit_resolver_hits_cache_on_second_run(store, src):
     assert np.allclose(first.to_numpy(), second.to_numpy(), equal_nan=True)
 
 
-def test_profit_resolver_recomputes_when_bars_change(store, src):
+def test_profit_resolver_resumes_when_bars_are_appended(store, src):
+    """追加几天只该续算尾巴,而且结果要与整段重算逐格相同。
+
+    这是缓存在日常最需要起作用的场景:每天补一根K线。
+    若这里退化成整只重算,5000 只每天都要从头滚 400 根,缓存等于白做。
+    """
+    bars, fs = src.bars["A"], src.floats["A"]
+    head, full = bars.iloc[:40], bars
+
+    r1 = cached_feed.ProfitResolver(store, _p(), verbose=False)
+    r1.get("A", head, fs)
+    r1.flush()
+
+    r2 = cached_feed.ProfitResolver(store, _p(), verbose=False)
+    got = r2.get("A", full, fs)
+    assert (r2.hits, r2.resumed, r2.misses) == (0, 1, 0)
+
+    want = profit_ratio(full, fs, decay=_p().chip_decay,
+                        bin_pct=_p().chip_bin_pct, volume_unit=100)
+    assert got.index.equals(want.index)
+    assert np.allclose(got.to_numpy(), want.to_numpy(), equal_nan=True)
+
+
+def test_profit_resolver_recomputes_when_history_rewritten(store, src):
+    """历史被改写(复权变化、数据修订)时不能续算 —— 续出来是看不出错的错值。"""
+    bars, fs = src.bars["A"], src.floats["A"]
+    r1 = cached_feed.ProfitResolver(store, _p(), verbose=False)
+    r1.get("A", bars.iloc[:40], fs)
+    r1.flush()
+
+    rewritten = bars.copy()
+    rewritten.iloc[5, rewritten.columns.get_loc("close")] *= 1.02
+    r2 = cached_feed.ProfitResolver(store, _p(), verbose=False)
+    got = r2.get("A", rewritten, fs)
+    assert (r2.hits, r2.resumed, r2.misses) == (0, 0, 1)
+
+    want = profit_ratio(rewritten, fs, decay=_p().chip_decay,
+                        bin_pct=_p().chip_bin_pct, volume_unit=100)
+    assert np.allclose(got.to_numpy(), want.to_numpy(), equal_nan=True)
+
+
+def test_profit_resolver_recomputes_when_bars_get_shorter(store, src):
+    """缓存比现在的K线还长,说明不是前缀关系,只能重算。"""
     bars, fs = src.bars["A"], src.floats["A"]
     r1 = cached_feed.ProfitResolver(store, _p(), verbose=False)
     r1.get("A", bars, fs)
     r1.flush()
 
     r2 = cached_feed.ProfitResolver(store, _p(), verbose=False)
-    r2.get("A", pd.concat([bars, mk_bars(5, start="2024-06-01", seed=7)]), fs)
-    assert (r2.hits, r2.misses) == (0, 1), "多了几根K线就必须重算"
+    r2.get("A", bars.iloc[:30], fs)
+    assert (r2.hits, r2.resumed, r2.misses) == (0, 0, 1)
+
+
+def test_resume_chain_matches_full_over_many_steps(store, src):
+    """连续多天逐日追加,最终结果必须仍与整段重算相同(误差不能累积)。"""
+    bars, fs = src.bars["A"], src.floats["A"]
+    for n in range(40, len(bars) + 1):
+        r = cached_feed.ProfitResolver(store, _p(), verbose=False)
+        got = r.get("A", bars.iloc[:n], fs)
+        r.flush()
+    want = profit_ratio(bars, fs, decay=_p().chip_decay,
+                        bin_pct=_p().chip_bin_pct, volume_unit=100)
+    assert np.allclose(got.to_numpy(), want.to_numpy(), equal_nan=True)
+
+
+def test_checkpoint_survives_full_hit_run(store, src):
+    """整段命中的那一轮不能把检查点弄丢,否则下次追加就续不上了。"""
+    bars, fs = src.bars["A"], src.floats["A"]
+    r1 = cached_feed.ProfitResolver(store, _p(), verbose=False)
+    r1.get("A", bars.iloc[:40], fs)
+    r1.flush()
+
+    r2 = cached_feed.ProfitResolver(store, _p(), verbose=False)   # 整段命中
+    r2.get("A", bars.iloc[:40], fs)
+    r2.flush()
+
+    r3 = cached_feed.ProfitResolver(store, _p(), verbose=False)   # 再追加
+    r3.get("A", bars, fs)
+    assert r3.resumed == 1, "整段命中那轮把检查点写没了"
 
 
 def test_profit_resolver_recomputes_when_float_shares_change(store, src):

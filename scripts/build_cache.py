@@ -27,7 +27,9 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from ema_strategy import cached_feed                            # noqa: E402
 from ema_strategy import feed                                    # noqa: E402
+from ema_strategy.bull import BullParams                         # noqa: E402
 from ema_strategy.store import ParquetStore, verify              # noqa: E402
 
 
@@ -49,6 +51,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="不抓资金流(没有投研版/Level2 权限时)")
     ap.add_argument("--refresh-floats", action="store_true", dest="refresh_floats",
                     help="强制重取流通股本(增发/解禁后应刷一次)")
+    ap.add_argument("--skip-profit", action="store_true", dest="skip_profit",
+                    help="不预算获利筹码(默认会算并存好,免得第一次回测再等一次)")
+    ap.add_argument("--chip-decay", type=float, default=BullParams().chip_decay,
+                    dest="chip_decay", help="筹码换手衰减系数")
+    ap.add_argument("--chip-bin-pct", type=float, default=BullParams().chip_bin_pct,
+                    dest="chip_bin_pct", help="筹码价格网格步长,别调大")
+    ap.add_argument("--volume-unit", type=int, default=BullParams().chip_volume_unit,
+                    dest="volume_unit", help="成交量单位:A股按手计=100")
     ap.add_argument("--status", action="store_true", help="只打印缓存现状,不取数")
     ap.add_argument("--verify", type=int, default=0, metavar="N",
                     help="抽 N 只重新取数,与缓存逐格比对")
@@ -85,6 +95,22 @@ def show_status(store: ParquetStore) -> int:
 
     floats = store.load_floats()
     print(f"  floats {len(floats)} 只")
+
+    prof = os.path.join(store.root, "profit", "profit.parquet")
+    ckpt = os.path.join(store.root, "profit", "checkpoint.parquet")
+    if os.path.exists(prof):
+        import pandas as _pd
+        d = _pd.read_parquet(prof, columns=["code", "date"])
+        n_ck = len(_pd.read_parquet(ckpt, columns=["code"])) if os.path.exists(ckpt) else 0
+        print(f"  profit {d['code'].nunique()} 只 | {int(len(d)):,} 行"
+              f" | 至 {_pd.Timestamp(d['date'].max()).date()}"
+              f" | 续算检查点 {n_ck} 只")
+        if not n_ck:
+            print("         没有检查点:下次补数据会整只重算,"
+                  "跑一次 build_cache.py 即可补上")
+    else:
+        print("  profit 空(回测时会自己算;"
+              "或现在跑 build_cache.py 预先算好)")
     return 0
 
 
@@ -122,6 +148,48 @@ def do_verify(store: ParquetStore, codes: list, start: str, end: str,
         print("\n[!] 缓存与行情源对不上。数据源事后修订过,或缓存写坏了。\n"
               "    处理:删掉缓存目录重建,别拿对不上的数据出结论。", file=sys.stderr)
     return rc
+
+
+def build_profit(store: ParquetStore, codes: list, floats: dict, a) -> None:
+    """预算获利筹码并存好。
+
+    不做这一步缓存也能用 —— 第一次回测会自己算一遍再存。放在这里只是为了
+    把「要等的那一次」都集中在建缓存阶段,回测什么时候跑都是快的。
+
+    走的是与回测完全相同的 ProfitResolver,所以能续算的就只算新增那几天:
+    每天补一根K线时,这一步是秒级而不是把 5000 只从头滚 400 根。
+    """
+    p = BullParams(chip_decay=a.chip_decay, chip_bin_pct=a.chip_bin_pct,
+                   chip_volume_unit=a.volume_unit)
+    resolver = cached_feed.ProfitResolver(store, p, verbose=False)
+    have = [c for c in codes if floats.get(c, 0) > 0]
+    print(f"预算获利筹码 {len(have)} 只 ...", flush=True)
+
+    t0 = time.perf_counter()
+    done = 0
+    for i in range(0, len(have), a.batch):
+        chunk = have[i:i + a.batch]
+        bars = store.load("bars", codes=chunk)
+        for code in chunk:
+            b = bars.get(code)
+            if b is None or not len(b):
+                continue
+            try:
+                resolver.get(code, b, floats[code])
+                done += 1
+            except Exception as exc:
+                print(f"    {code} 筹码计算失败:{type(exc).__name__}: {exc}",
+                      file=sys.stderr)
+        used = time.perf_counter() - t0
+        n = min(i + a.batch, len(have))
+        print(f"  [{n}/{len(have)}] 已用{used:.0f}s"
+              f" 预计还需{used / max(n, 1) * (len(have) - n):.0f}s", flush=True)
+
+    total = resolver.hits + resolver.resumed + resolver.misses
+    print(f"获利筹码:整段命中 {resolver.hits}/{total}、"
+          f"续算 {resolver.resumed} 只、整只重算 {resolver.misses} 只"
+          f"({time.perf_counter() - t0:.0f}s)")
+    resolver.flush()
 
 
 def main(argv=None) -> int:
@@ -197,6 +265,9 @@ def main(argv=None) -> int:
     floats = feed.fetch_float_shares(codes, verbose=False)
     store.save_floats(floats, verbose=False)
     print(f"流通股本 {len(floats)}/{len(codes)} 只({time.perf_counter() - t0:.1f}s)")
+
+    if not a.skip_profit:
+        build_profit(store, codes, floats, a)
 
     print(f"\n完成,用时 {(time.perf_counter() - t_start) / 60:.1f}min。"
           f"行情 {n_bars:,} 行、资金流 {n_flow:,} 行")
