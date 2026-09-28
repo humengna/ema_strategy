@@ -8,6 +8,9 @@
 【选股条件】(当日须全部满足)
   1. 处于黄金眼形态维持期间
      形态启动:MA5上穿MA10 -> MA5上穿MA30 -> MA10上穿MA30 依次出现,第三个金叉当天
+               三个金叉须分属三个不同交易日(严格 1号日 < 2号日 < 3号日),
+               任意两个同日即作废 —— 跳空高开可能一天内同时上穿两条均线,
+               那是一次跳空,不是「依次出现」的三步确认。
      形态破坏:MA5 或 MA10 跌破 MA30
   2. 均线转向:前一日至少一条均线下行,当日三条全部上行
   3. 获利筹码 > 85%
@@ -42,6 +45,7 @@ import pandas as pd
 SECTOR = '沪深A股'          # 股票池;调试可改 '沪深300'
 FAST, MID, SLOW = 5, 10, 30  # 黄金眼三条均线
 MAX_SPAN = 60                # 1号到3号金叉的最大间隔(交易日)
+REQUIRE_DISTINCT_DAYS = True # 三个金叉须分属不同交易日,严格 1号 < 2号 < 3号
 PROFIT_MIN = 0.85            # 获利筹码下限(严格大于)
 CHIP_BIN_PCT = 0.002         # 筹码价格网格步长,别调大(见仓库 README 的收敛性说明)
 CHIP_GRID_SPAN = 50.0
@@ -89,6 +93,8 @@ def _cross_down(a, b):
 def _find_sequences(d):
     """扫出 1号(5上穿10) -> 2号(5上穿30) -> 3号(10上穿30) 依次完成的序列。
 
+    REQUIRE_DISTINCT_DAYS 时要求下标严格递增 i1 < i2 < i,任意两个同日即作废。
+
     返回第三个金叉(形态启动日)的下标列表。
     """
     c1 = _cross_up(d['ma_f'], d['ma_m']).to_numpy()
@@ -106,7 +112,8 @@ def _find_sequences(d):
         if c2[i] and i1 is not None and i >= i1:
             i2 = i
         if c3[i] and i1 is not None and i2 is not None and i >= i2:
-            starts.append(i)
+            if not REQUIRE_DISTINCT_DAYS or i1 < i2 < i:
+                starts.append(i)
             i1 = i2 = None
     return starts
 

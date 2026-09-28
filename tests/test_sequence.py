@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """三金叉序列的不变量与边界。"""
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -83,13 +84,59 @@ def test_abort_on_dead_cross_is_stricter(intc):
     assert len(loose) >= len(strict)
 
 
-def test_require_distinct_days(intc):
-    default = run(intc, Params())["sequences"]
-    distinct = run(intc, Params(require_distinct_days=True))["sequences"]
-    assert len(distinct) <= len(default)
-    if len(distinct):
-        assert (distinct["span_1_2"] > 0).all()
-        assert (distinct["span_2_3"] > 0).all()
+def test_distinct_days_is_the_default(intc):
+    """三个金叉分属不同日是默认口径,不再是可选项。"""
+    assert Params().require_distinct_days is True
+    seq = run(intc, Params())["sequences"]
+    assert len(seq)
+    assert (seq["span_1_2"] > 0).all()
+    assert (seq["span_2_3"] > 0).all()
+
+
+def test_allowing_same_day_only_adds_sequences(intc):
+    """放开同日只会多出序列,不会改变其余序列的内容。
+
+    被剔除的那些序列在两种模式下走的是同一条状态机路径(命中 c3 时
+    一样重置),所以严格结果就是宽松结果按「两段间隔都大于0」过滤,
+    不存在因为剔除而连锁改变后续序列的情况。
+    """
+    loose = run(intc, Params(require_distinct_days=False))["sequences"]
+    strict = run(intc, Params(require_distinct_days=True))["sequences"]
+    expected = loose[(loose["span_1_2"] > 0) & (loose["span_2_3"] > 0)]
+    assert len(strict) < len(loose)               # 真实数据上确实有同日的
+    pd.testing.assert_frame_equal(strict.reset_index(drop=True),
+                                  expected.reset_index(drop=True))
+
+
+def _ramp(slope: float, jump: float, n: int = 45, tail: int = 20) -> pd.DataFrame:
+    """先阴跌把 MA5 压到 MA10、MA30 下方,再一根大阳线跳上去。
+
+    跳得越猛,MA5 越可能一天之内同时上穿 MA10 和 MA30(1号2号同日)。
+    """
+    close = list(20.0 + slope * np.arange(n))
+    close += [close[-1] * jump] * tail
+    idx = pd.bdate_range("2024-01-01", periods=len(close))
+    return pd.DataFrame({"open": close, "high": close, "low": close, "close": close},
+                        index=idx)
+
+
+def test_same_day_cross_is_rejected():
+    """一次跳空里 MA5 同时上穿 MA10 与 MA30 —— 1号2号同日,正是要剔除的。"""
+    df = _ramp(slope=-0.1, jump=1.5)
+    loose = run(df, Params(require_distinct_days=False))["sequences"]
+    assert len(loose) == 1
+    assert loose.iloc[0]["span_1_2"] == 0          # 1号2号确实同日
+    assert run(df, Params(require_distinct_days=True))["sequences"].empty
+
+
+def test_genuinely_sequential_crosses_survive():
+    """跌得缓一些,三个金叉自然分到三天,严格口径下应当保留。"""
+    df = _ramp(slope=-0.2, jump=1.5)
+    strict = run(df, Params(require_distinct_days=True))["sequences"]
+    assert len(strict) == 1
+    r = strict.iloc[0]
+    assert r["span_1_2"] > 0 and r["span_2_3"] > 0
+    assert r["start_date"] < r["c2_date"] < r["confirm_date"]
 
 
 def test_triggered_column_matches_daily_flag(scanned):

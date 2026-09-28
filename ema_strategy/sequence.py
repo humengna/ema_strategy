@@ -12,8 +12,11 @@
     不加这条的话,一个很久以前的1号金叉能和数月后的3号金叉凑成一对。
   · max_span:1号到3号的最大间隔交易日。实测真实间隔中位数 5-6 日、最大 13 日。
   · 期间再次出现1号金叉时,以最新的为准并重置2号。
-  · 允许同日发生多个金叉(跳空高开可一次上穿两条均线);
-    require_distinct_days=True 可要求三个金叉分属不同交易日。
+  · require_distinct_days(默认开):三个金叉须分属三个不同交易日,
+    严格 1号日 < 2号日 < 3号日,任意两个同日即作废。
+    跳空高开时 MA5 可以一天之内同时上穿 MA10 和 MA30(1号2号同日),
+    那是一次跳空带出来的,不是「依次出现」的三步确认,口径上不算数。
+    关掉它(=False)则允许同日,只要求先后不倒置。
 """
 from __future__ import annotations
 
@@ -37,7 +40,7 @@ class Params:
     ma_kind: str = "sma"
     max_span: int = 60                    # 1号 -> 3号 最大间隔(交易日)
     abort_on_dead_cross: bool = True      # 等待期间 MA5 下穿 MA10 则作废
-    require_distinct_days: bool = False   # 是否要求三个金叉不同日
+    require_distinct_days: bool = True    # 三个金叉须分属不同交易日,严格依次
     start_bar: str = PIERCE               # 启动点要求的K线形态
     confirm_bar: str = GAP                # 确认点要求的K线形态
 
@@ -89,7 +92,9 @@ def find_sequences(d: pd.DataFrame, p: Params) -> pd.DataFrame:
         if c2[i] and i1 is not None and i >= i1:
             i2 = i
         if c3[i] and i1 is not None and i2 is not None and i >= i2:
-            if not (p.require_distinct_days and not (i1 < i2 < i)):
+            # require_distinct_days 时要求严格递增 i1 < i2 < i:
+            # 任意两个金叉同日即作废,不记录这一条序列。
+            if not p.require_distinct_days or i1 < i2 < i:
                 rows.append({
                     "start_date": idx[i1], "c2_date": idx[i2], "confirm_date": idx[i],
                     "start_bar": bar[i1], "confirm_bar": bar[i],

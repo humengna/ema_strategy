@@ -393,6 +393,34 @@ def test_market_data_uses_subscribe_false():
         assert kw["subscribe"].value is False
 
 
+def test_qmt_requires_distinct_cross_days(qmt):
+    """QMT 版必须与包里同口径:三个金叉分属不同交易日。
+
+    上面的 test_sequences_match 用包的默认参数做等价比对,这里再把常量本身钉住
+    —— 免得两边被一起改错,等价测试照样通过,比不出来。
+    """
+    assert qmt.REQUIRE_DISTINCT_DAYS is True
+    assert SeqParams().require_distinct_days is True
+
+
+def test_qmt_rejects_same_day_crosses(qmt):
+    """跳空一天内同时上穿两条均线时,QMT 版也要剔除。"""
+    close = list(20.0 - 0.1 * np.arange(45))
+    close += [close[-1] * 1.5] * 20
+    idx = pd.bdate_range("2024-01-01", periods=len(close))
+    df = pd.DataFrame({"open": close, "high": close, "low": close, "close": close,
+                       "volume": [1e6] * len(close)}, index=idx)
+    d = df.copy()
+    d["ma_f"] = qmt._ma(d["close"], qmt.FAST)
+    d["ma_m"] = qmt._ma(d["close"], qmt.MID)
+    d["ma_s"] = qmt._ma(d["close"], qmt.SLOW)
+    assert qmt._find_sequences(d) == []
+
+    loose = find_sequences(prepare(df, SeqParams()),
+                           SeqParams(require_distinct_days=False))
+    assert len(loose) == 1 and loose.iloc[0]["span_1_2"] == 0
+
+
 def test_flow_periods_prefer_transactioncount1d(qmt):
     """官方数据字典里内置 get_market_data_ex 可以传 transactioncount1d。
 

@@ -82,6 +82,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="打开回踩要求(默认关闭)")
     ap.add_argument("--pullback-window", type=int, default=6, dest="pullback_window")
     ap.add_argument("--max-span", type=int, default=60, dest="max_span")
+    ap.add_argument("--allow-same-day", action="store_true", dest="allow_same_day",
+                    help="允许两个金叉同日(默认要求三个金叉分属不同交易日,"
+                         "严格 1号日 < 2号日 < 3号日)")
     ap.add_argument("--volume-unit", type=int, default=0, dest="volume_unit",
                     help="volume 的单位:A股(QMT)按手计=100,已是股数则=1。"
                          "缺省按数据源自动取(QMT=100,--csv=1)")
@@ -136,7 +139,8 @@ def load_qmt(code: str, start: str, end: str, a) -> tuple:
 
 
 def describe_params(p: BullParams) -> str:
-    conds = ["形态维持"]
+    conds = ["形态维持" + ("(三金叉分属不同日)" if p.seq.require_distinct_days
+                          else "(允许金叉同日)")]
     if p.require_pullback:
         conds.append(f"近{p.pullback_window}日内有回踩")
     conds.append("均线转向(昨有下行今全上)" if p.require_ma_turn else "三线均向上")
@@ -250,7 +254,8 @@ def main(argv=None) -> int:
 
     # CSV 一般是美股/导出数据,volume 已是股数;QMT 的 volume 以「手」计。
     unit = a.volume_unit or (1 if a.csv else 100)
-    p = BullParams(seq=Params(max_span=a.max_span),
+    p = BullParams(seq=Params(max_span=a.max_span,
+                              require_distinct_days=not a.allow_same_day),
                    require_pullback=a.pullback, pullback_window=a.pullback_window,
                    require_ma_turn=not a.ma_up, profit_min=a.profit_min,
                    volume_mode=a.volume_mode, volume_ratio=a.volume_ratio,

@@ -37,8 +37,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="1号到3号金叉的最大间隔交易日")
     ap.add_argument("--no-start-bar", action="store_true",
                     help="放宽「启动点须贯穿」(实测该条件为负贡献,见 README)")
-    ap.add_argument("--distinct-days", action="store_true",
-                    help="要求三个金叉分属不同交易日")
+    ap.add_argument("--allow-same-day", action="store_true", dest="allow_same_day",
+                    help="允许两个金叉同日(默认要求三个金叉分属不同交易日,"
+                         "严格 1号日 < 2号日 < 3号日)")
     ap.add_argument("--limit", type=int, default=0,
                     help="只取股票池前 N 只,用于先小规模试跑(0=不限制)")
     ap.add_argument("--no-download", action="store_true", dest="no_download",
@@ -65,7 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    params = Params(max_span=args.max_span, require_distinct_days=args.distinct_days)
+    params = Params(max_span=args.max_span,
+                    require_distinct_days=not args.allow_same_day)
     start = args.start or (pd.Timestamp(args.date) - pd.Timedelta(days=400)).strftime("%Y%m%d")
 
     if args.strategy == "bull":
