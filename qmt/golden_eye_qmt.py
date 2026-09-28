@@ -1,61 +1,73 @@
-#encoding:utf-8
+#coding:gbk
 """
-é»„é‡‘çœ¼é€‰è‚¡ â€”â€” QMT å†…ç½® Python ç‰ˆ
+»Æ½ðÑÛÑ¡¹É ¡ª¡ª QMT ÄÚÖÃ Python °æ
 
-æ”¾è¿› QMTã€Œç­–ç•¥ç¼–è¾‘å™¨ã€å³å¯è¿è¡Œã€‚ä¸Žä»“åº“é‡Œçš„ ema_strategy åŒ…æ˜¯åŒä¸€å¥—é€»è¾‘,
-ä½†å®Œå…¨è‡ªåŒ…å«(QMT çŽ¯å¢ƒé‡Œæ²¡æœ‰è¯¥åŒ…),æ‰€æœ‰è®¡ç®—å‡½æ•°éƒ½åœ¨æœ¬æ–‡ä»¶å†…ã€‚
+·Å½ø QMT¡¸²ßÂÔ±à¼­Æ÷¡¹¼´¿ÉÔËÐÐ¡£Óë²Ö¿âÀïµÄ ema_strategy °üÊÇÍ¬Ò»Ì×Âß¼­,
+µ«ÍêÈ«×Ô°üº¬(QMT »·¾³ÀïÃ»ÓÐ¸Ã°ü),ËùÓÐ¼ÆËãº¯Êý¶¼ÔÚ±¾ÎÄ¼þÄÚ¡£
 
-ã€é€‰è‚¡æ¡ä»¶ã€‘(å½“æ—¥é¡»å…¨éƒ¨æ»¡è¶³)
-  1. å¤„äºŽé»„é‡‘çœ¼å½¢æ€ç»´æŒæœŸé—´
-     å½¢æ€å¯åŠ¨:MA5ä¸Šç©¿MA10 -> MA5ä¸Šç©¿MA30 -> MA10ä¸Šç©¿MA30 ä¾æ¬¡å‡ºçŽ°,ç¬¬ä¸‰ä¸ªé‡‘å‰å½“å¤©
-     å½¢æ€ç ´å:MA5 æˆ– MA10 è·Œç ´ MA30
-  2. å‡çº¿è½¬å‘:å‰ä¸€æ—¥è‡³å°‘ä¸€æ¡å‡çº¿ä¸‹è¡Œ,å½“æ—¥ä¸‰æ¡å…¨éƒ¨ä¸Šè¡Œ
-  3. èŽ·åˆ©ç­¹ç  > 85%
-  4. å½“æ—¥èµ„é‡‘æµå…¥:bidMostAmount - offMostAmount > 0
-  5. æ”¾é‡:æˆäº¤é‡ > å‰ä¸€æ—¥æˆäº¤é‡
+¡¾Ñ¡¹ÉÌõ¼þ¡¿(µ±ÈÕÐëÈ«²¿Âú×ã)
+  1. ´¦ÓÚ»Æ½ðÑÛÐÎÌ¬Î¬³ÖÆÚ¼ä
+     ÐÎÌ¬Æô¶¯:MA5ÉÏ´©MA10 -> MA5ÉÏ´©MA30 -> MA10ÉÏ´©MA30 ÒÀ´Î³öÏÖ,µÚÈý¸ö½ð²æµ±Ìì
+     ÐÎÌ¬ÆÆ»µ:MA5 »ò MA10 µøÆÆ MA30
+  2. ¾ùÏß×ªÏò:Ç°Ò»ÈÕÖÁÉÙÒ»Ìõ¾ùÏßÏÂÐÐ,µ±ÈÕÈýÌõÈ«²¿ÉÏÐÐ
+  3. »ñÀû³ïÂë > 85%
+  4. µ±ÈÕ×Ê½ðÁ÷Èë:bidMostAmount - offMostAmount > 0
+  5. ·ÅÁ¿:³É½»Á¿ > Ç°Ò»ÈÕ³É½»Á¿
 
-ã€ç¼–ç ã€‘
-  æœ¬æ–‡ä»¶ä»¥ UTF-8 ä¿å­˜,é¦–è¡Œå£°æ˜Ž utf-8ã€‚è‹¥ QMT æŠ¥ç¼–ç é”™,
-  æŠŠæ–‡ä»¶å¦å­˜ä¸º GBK å¹¶æŠŠé¦–è¡Œæ”¹æˆ #encoding:gbkã€‚
+¡¾±àÂë¡¿
+  ¹Ù·½ÎÄµµ¡¶¿ìËÙ¿ªÊ¼¡·Ã÷È·ÒªÇó:Ê×ÐÐÐ´ #coding:gbk,½Å±¾Í³Ò» GBK ±àÂë¡£
+  ±¾ÎÄ¼þÇëÒÔ GBK Áí´æºóÔÙÌù½ø QMT ²ßÂÔ±à¼­Æ÷¡£
 
-ã€è¿è¡Œæ–¹å¼ã€‘
-  å‘¨æœŸé€‰ã€Œæ—¥çº¿ã€ã€‚init é‡Œå–å¥½è‚¡ç¥¨æ± ,handlebar åœ¨æœ€åŽä¸€æ ¹Kçº¿ä¸Šåšå…¨å¸‚åœºæ‰«æ,
-  æŠŠå½“æ—¥å…¥é€‰è‚¡ç¥¨æ‰“å°å‡ºæ¥ã€‚å›žæµ‹æ¨¡å¼ä¸‹é€æ ¹Kçº¿éƒ½ä¼šè¾“å‡ºå½“æ—¥é€‰è‚¡ã€‚
+¡¾ÔËÐÐ·½Ê½¡¿
+  ÖÜÆÚÑ¡¡¸ÈÕÏß¡¹,ÇÒ»Ø²â±ØÐëÒÔ¡¸¸±Í¼Ä£Ê½¡¹Ö´ÐÐ(¹Ù·½ÎÄµµÔ­ÎÄ:
+  »Ø²â±ØÐëÒÔ ¸±Í¼Ä£Ê½ Ö´ÐÐ,²»ÒªÑ¡ÔñÖ÷Í¼/Ö÷Í¼µþ¼Ó)¡£
+  init ÀïÈ¡ºÃ¹ÉÆ±³Ø,handlebar É¨Ãè²¢´òÓ¡µ±ÈÕÈëÑ¡¹ÉÆ±¡£
 
-ã€ä¸Ž Python ç‰ˆçš„ä¸€è‡´æ€§ã€‘
-  æœ¬æ–‡ä»¶çš„çº¯è®¡ç®—å‡½æ•°ä¸Ž ema_strategy åŒ…é€ä½å¯¹é½,ç”± tests/test_qmt_port.py æ ¡éªŒã€‚
+¡¾×Ê½ðÁ÷Êý¾Ý¡¿
+  ÄÚÖÃ API µÄÖÜÆÚÁÐ±íÀïÃ»ÓÐ transactioncount1d(ÄÇÊÇ xtdata ²àµÄÖÜÆÚ)¡£
+  bidMostAmount / offMostAmount Ö»ÄÜ×ß 'l2transactioncount'
+  ¡ª¡ª Level2 Öð±Ê³É½»Í³¼Æ,Ðè Level2 È¨ÏÞ,ÇÒÊÇÅÌÖÐÀÛ¼ÆÖµ,
+  ±¾ÎÄ¼þ°´ÈÕÈ¡Ä©Öµ»ã×ÜÎªµ±ÈÕ¿Ú¾¶¡£
+  È¡²»µ½Ê±¸Ã¹ÉÒ»ÂÉ²»ÈëÑ¡,²»°ÑÈ±Êý¾Ýµ±³É¡¸ÓÐÁ÷Èë¡¹·Å¹ý¡£
+
+¡¾Óë Python °æµÄÒ»ÖÂÐÔ¡¿
+  ±¾ÎÄ¼þµÄ´¿¼ÆËãº¯ÊýÓë ema_strategy °üÖðÎ»¶ÔÆë,ÓÉ tests/test_qmt_port.py Ð£Ñé¡£
 """
 import numpy as np
 import pandas as pd
 
-# ------------------------------------------------------------------ å‚æ•°
-SECTOR = 'æ²ªæ·±Aè‚¡'          # è‚¡ç¥¨æ± ;è°ƒè¯•å¯æ”¹ 'æ²ªæ·±300'
-FAST, MID, SLOW = 5, 10, 30  # é»„é‡‘çœ¼ä¸‰æ¡å‡çº¿
-MAX_SPAN = 60                # 1å·åˆ°3å·é‡‘å‰çš„æœ€å¤§é—´éš”(äº¤æ˜“æ—¥)
-PROFIT_MIN = 0.85            # èŽ·åˆ©ç­¹ç ä¸‹é™(ä¸¥æ ¼å¤§äºŽ)
-CHIP_BIN_PCT = 0.002         # ç­¹ç ä»·æ ¼ç½‘æ ¼æ­¥é•¿,åˆ«è°ƒå¤§(è§ä»“åº“ README çš„æ”¶æ•›æ€§è¯´æ˜Ž)
+# ------------------------------------------------------------------ ²ÎÊý
+SECTOR = '»¦ÉîA¹É'          # ¹ÉÆ±³Ø;µ÷ÊÔ¿É¸Ä '»¦Éî300'
+FAST, MID, SLOW = 5, 10, 30  # »Æ½ðÑÛÈýÌõ¾ùÏß
+MAX_SPAN = 60                # 1ºÅµ½3ºÅ½ð²æµÄ×î´ó¼ä¸ô(½»Ò×ÈÕ)
+PROFIT_MIN = 0.85            # »ñÀû³ïÂëÏÂÏÞ(ÑÏ¸ñ´óÓÚ)
+CHIP_BIN_PCT = 0.002         # ³ïÂë¼Û¸ñÍø¸ñ²½³¤,±ðµ÷´ó(¼û²Ö¿â README µÄÊÕÁ²ÐÔËµÃ÷)
 CHIP_GRID_SPAN = 50.0
 CHIP_MIN_PERIODS = 30
-VOLUME_UNIT = 100            # QMT çš„ volume ä»¥ã€Œæ‰‹ã€è®¡,æ¢æ‰‹çŽ‡è¦ä¹˜ 100
-HISTORY_BARS = 400           # æ¯åªç¥¨å–å¤šå°‘æ ¹æ—¥çº¿
+VOLUME_UNIT = 100            # QMT µÄ volume ÒÔ¡¸ÊÖ¡¹¼Æ,»»ÊÖÂÊÒª³Ë 100
+HISTORY_BARS = 400           # Ã¿Ö»Æ±È¡¶àÉÙ¸ùÈÕÏß
 EXCLUDE_ST = True
 MIN_LISTED_DAYS = 120
-PRINT_LIMIT = 50             # æ¯æ—¥æœ€å¤šæ‰“å°å¤šå°‘åª
-SCAN_EVERY_BAR = False       # False=åªåœ¨æœ€æ–°Kçº¿é€‰è‚¡(å®žç›˜);True=æ¯æ ¹Kçº¿éƒ½æ‰«(å›žæµ‹é€æ—¥è¾“å‡º)
-BATCH_SIZE = 50              # æ¯æ‰¹å¤„ç†å¤šå°‘åªã€‚è°ƒå°=è¿›åº¦æ›´å¯†ã€æ›´æ—©çœ‹åˆ°æ˜¯å¦å¡ä½
-PROBE_FIRST = True           # å…ˆè·‘ä¸€æ‰¹æµ‹é€Ÿå¹¶ç»™å‡ºå…¨é‡é¢„ä¼°,å†å†³å®šè¦ä¸è¦ç­‰ä¸‹åŽ»
+PRINT_LIMIT = 50             # Ã¿ÈÕ×î¶à´òÓ¡¶àÉÙÖ»
+SCAN_EVERY_BAR = False       # False=Ö»ÔÚ×îÐÂKÏßÑ¡¹É(ÊµÅÌ);True=Ã¿¸ùKÏß¶¼É¨(»Ø²âÖðÈÕÊä³ö)
+BATCH_SIZE = 50              # Ã¿Åú´¦Àí¶àÉÙÖ»¡£µ÷Ð¡=½ø¶È¸üÃÜ¡¢¸üÔç¿´µ½ÊÇ·ñ¿¨×¡
+PROBE_FIRST = True           # ÏÈÅÜÒ»Åú²âËÙ²¢¸ø³öÈ«Á¿Ô¤¹À,ÔÙ¾ö¶¨Òª²»ÒªµÈÏÂÈ¥
+# ÄÚÖÃ API Ã»ÓÐ transactioncount1d(ÄÇÊÇ xtdata ²àµÄÖÜÆÚ);
+# bidMostAmount/offMostAmount Ö»ÔÚ Level2 ´óµ¥Í³¼ÆÀï,ÇÒÊÇÅÌÖÐÀÛ¼ÆÖµ¡£
+FLOW_PERIOD = 'l2transactioncount'
+FLOW_BARS_PER_DAY = 1        # L2 Ã¿ÈÕÔ¼¶àÉÙÌõ¡£È¡²»ÂúÊ±°´ÈÕÈ¡Ä©ÖµÈÔÈ»ÕýÈ·,Ö»ÊÇ¶àÈ¡Ð©
 
 
-# ------------------------------------------------------- çº¯è®¡ç®—(ä¸ŽPythonç‰ˆä¸€è‡´)
+# ------------------------------------------------------- ´¿¼ÆËã(ÓëPython°æÒ»ÖÂ)
 def _ma(s, n):
     return s.rolling(n).mean()
 
 
 def _crossed(state, a, b):
-    """ç”± state çš„ False->True è·ƒè¿åˆ¤å®šç©¿è¶Šã€‚
+    """ÓÉ state µÄ False->True Ô¾Ç¨ÅÐ¶¨´©Ô½¡£
 
-    å¿…é¡»è¦æ±‚å‰ä¸€æ ¹Kçº¿ä¸¤æ¡å‡çº¿éƒ½å·²æœ‰å€¼:å¦åˆ™å‡çº¿é¢„çƒ­æœŸç»“æŸçš„ç¬¬ä¸€æ ¹Kçº¿ä¸Š,
-    state ä»Ž False(NaN æ¯”è¾ƒç»“æžœ)è·³åˆ° True,ä¼šè¢«è¯¯åˆ¤æˆä¸€æ¬¡é‡‘å‰ã€‚
+    ±ØÐëÒªÇóÇ°Ò»¸ùKÏßÁ½Ìõ¾ùÏß¶¼ÒÑÓÐÖµ:·ñÔò¾ùÏßÔ¤ÈÈÆÚ½áÊøµÄµÚÒ»¸ùKÏßÉÏ,
+    state ´Ó False(NaN ±È½Ï½á¹û)Ìøµ½ True,»á±»ÎóÅÐ³ÉÒ»´Î½ð²æ¡£
     """
     valid = a.notna() & b.notna()
     return (state & ~state.shift(1, fill_value=False)
@@ -63,7 +75,7 @@ def _crossed(state, a, b):
 
 
 def _cross_up(a, b):
-    return _crossed(a >= b, a, b)          # ç›¸ç­‰ç®—ä½œåœ¨ä¸Šæ–¹
+    return _crossed(a >= b, a, b)          # ÏàµÈËã×÷ÔÚÉÏ·½
 
 
 def _cross_down(a, b):
@@ -71,9 +83,9 @@ def _cross_down(a, b):
 
 
 def _find_sequences(d):
-    """æ‰«å‡º 1å·(5ä¸Šç©¿10) -> 2å·(5ä¸Šç©¿30) -> 3å·(10ä¸Šç©¿30) ä¾æ¬¡å®Œæˆçš„åºåˆ—ã€‚
+    """É¨³ö 1ºÅ(5ÉÏ´©10) -> 2ºÅ(5ÉÏ´©30) -> 3ºÅ(10ÉÏ´©30) ÒÀ´ÎÍê³ÉµÄÐòÁÐ¡£
 
-    è¿”å›žç¬¬ä¸‰ä¸ªé‡‘å‰(å½¢æ€å¯åŠ¨æ—¥)çš„ä¸‹æ ‡åˆ—è¡¨ã€‚
+    ·µ»ØµÚÈý¸ö½ð²æ(ÐÎÌ¬Æô¶¯ÈÕ)µÄÏÂ±êÁÐ±í¡£
     """
     c1 = _cross_up(d['ma_f'], d['ma_m']).to_numpy()
     c2 = _cross_up(d['ma_f'], d['ma_s']).to_numpy()
@@ -84,9 +96,9 @@ def _find_sequences(d):
     for i in range(len(d)):
         if i1 is not None:
             if (dead[i] and not c1[i]) or (i - i1 > MAX_SPAN):
-                i1 = i2 = None             # å¯åŠ¨æ¡ä»¶åè½¬æˆ–è¶…æœŸ,æœ¬è½®ä½œåºŸ
+                i1 = i2 = None             # Æô¶¯Ìõ¼þ·´×ª»ò³¬ÆÚ,±¾ÂÖ×÷·Ï
         if c1[i]:
-            i1, i2 = i, None               # ä»¥æœ€æ–°çš„1å·é‡‘å‰ä¸ºå‡†
+            i1, i2 = i, None               # ÒÔ×îÐÂµÄ1ºÅ½ð²æÎª×¼
         if c2[i] and i1 is not None and i >= i1:
             i2 = i
         if c3[i] and i1 is not None and i2 is not None and i >= i2:
@@ -96,7 +108,7 @@ def _find_sequences(d):
 
 
 def _pattern_active(d, starts):
-    """å½¢æ€è‡ªå¯åŠ¨æ—¥å¼€å¯,MA5 æˆ– MA10 è·Œç ´ MA30 å³ç ´åã€‚"""
+    """ÐÎÌ¬×ÔÆô¶¯ÈÕ¿ªÆô,MA5 »ò MA10 µøÆÆ MA30 ¼´ÆÆ»µ¡£"""
     broken = ((d['ma_f'] < d['ma_s']) | (d['ma_m'] < d['ma_s'])).to_numpy()
     active = np.zeros(len(d), dtype=bool)
     start_set, on = set(starts), False
@@ -116,9 +128,9 @@ def _all_ma_rising(d):
 
 
 def _ma_turn_up(d):
-    """å‰ä¸€æ—¥è‡³å°‘ä¸€æ¡å‡çº¿ä¸‹è¡Œ,å½“æ—¥ä¸‰æ¡å…¨éƒ¨ä¸Šè¡Œã€‚
+    """Ç°Ò»ÈÕÖÁÉÙÒ»Ìõ¾ùÏßÏÂÐÐ,µ±ÈÕÈýÌõÈ«²¿ÉÏÐÐ¡£
 
-    ã€Œè‡³å°‘ä¸€æ¡å‘ä¸‹ã€æŒ‰å­—é¢å–ä¸¥æ ¼å°äºŽ;èµ°å¹³ä¸ç®—å‘ä¸‹ã€‚
+    ¡¸ÖÁÉÙÒ»ÌõÏòÏÂ¡¹°´×ÖÃæÈ¡ÑÏ¸ñÐ¡ÓÚ;×ßÆ½²»ËãÏòÏÂ¡£
     """
     cols = ('ma_f', 'ma_m', 'ma_s')
     any_down = pd.concat([d[c] < d[c].shift(1) for c in cols], axis=1).any(axis=1)
@@ -127,16 +139,16 @@ def _ma_turn_up(d):
 
 
 def _volume_surge_prev(volume):
-    """æ”¾é‡:å½“æ—¥æˆäº¤é‡é«˜äºŽå‰ä¸€æ—¥ã€‚"""
+    """·ÅÁ¿:µ±ÈÕ³É½»Á¿¸ßÓÚÇ°Ò»ÈÕ¡£"""
     prev = volume.shift(1)
     return (volume > prev) & prev.notna()
 
 
 def _price_grid(ref, bin_pct, span):
-    """ä»¥é¦–ä¸ªæœ‰æ•ˆæ”¶ç›˜ä»·ä¸ºé”šç‚¹çš„ç­‰æ¯”ä»·æ ¼ç½‘æ ¼ã€‚
+    """ÒÔÊ×¸öÓÐÐ§ÊÕÅÌ¼ÛÎªÃªµãµÄµÈ±È¼Û¸ñÍø¸ñ¡£
 
-    ç½‘æ ¼ä½ç½®åªç”±èµ·ç‚¹å†³å®š,ä¸ŽåŽç»­ä»·æ ¼æ— å…³ â€”â€” è‹¥æ”¹ç”¨å…¨æ®µ min/max åˆ’ç½‘æ ¼,
-    åŒä¸€å¤©çš„èŽ·åˆ©æ¯”ä¾‹ä¼šéšåŽç»­Kçº¿å˜åŒ–,é‚£æ˜¯æœªæ¥å‡½æ•°ã€‚
+    Íø¸ñÎ»ÖÃÖ»ÓÉÆðµã¾ö¶¨,ÓëºóÐø¼Û¸ñÎÞ¹Ø ¡ª¡ª Èô¸ÄÓÃÈ«¶Î min/max »®Íø¸ñ,
+    Í¬Ò»ÌìµÄ»ñÀû±ÈÀý»áËæºóÐøKÏß±ä»¯,ÄÇÊÇÎ´À´º¯Êý¡£
     """
     lo, hi = ref / span, ref * span
     n = int(np.ceil(np.log(hi / lo) / np.log1p(bin_pct)))
@@ -146,7 +158,7 @@ def _price_grid(ref, bin_pct, span):
 
 
 def _triangle(seg, low, high, peak):
-    """å½“æ—¥æˆäº¤åœ¨ä»·æ ¼æ¡¶ä¸Šçš„ä¸‰è§’åˆ†å¸ƒ(å³°å€¼åœ¨æˆäº¤å‡ä»·),å·²å½’ä¸€åŒ–ã€‚"""
+    """µ±ÈÕ³É½»ÔÚ¼Û¸ñÍ°ÉÏµÄÈý½Ç·Ö²¼(·åÖµÔÚ³É½»¾ù¼Û),ÒÑ¹éÒ»»¯¡£"""
     if len(seg) == 1:
         return np.ones(1)
     peak = low if peak < low else (high if peak > high else peak)
@@ -159,13 +171,13 @@ def _triangle(seg, low, high, peak):
 
 
 def _profit_ratio(bars, float_shares):
-    """èŽ·åˆ©ç­¹ç æ¯”ä¾‹(æ¢æ‰‹è¡°å‡æ³•)ã€‚
+    """»ñÀû³ïÂë±ÈÀý(»»ÊÖË¥¼õ·¨)¡£
 
-    æ¯æ—¥å·²æœ‰ç­¹ç æŒ‰æ¢æ‰‹çŽ‡è¡°å‡,è…¾å‡ºçš„æ¯”ä¾‹ç”±å½“æ—¥ä»·æ ¼åˆ†å¸ƒè¡¥ä¸Š;
-    èŽ·åˆ©æ¯”ä¾‹ = æˆæœ¬ä½ŽäºŽå½“æ—¥æ”¶ç›˜ä»·çš„ç­¹ç å æ¯”ã€‚
+    Ã¿ÈÕÒÑÓÐ³ïÂë°´»»ÊÖÂÊË¥¼õ,ÌÚ³öµÄ±ÈÀýÓÉµ±ÈÕ¼Û¸ñ·Ö²¼²¹ÉÏ;
+    »ñÀû±ÈÀý = ³É±¾µÍÓÚµ±ÈÕÊÕÅÌ¼ÛµÄ³ïÂëÕ¼±È¡£
 
-    æ³¨æ„ volume ä»¥ã€Œæ‰‹ã€è®¡,æ¢æ‰‹çŽ‡é¡»ä¹˜ VOLUME_UNITã€‚æ¼ä¹˜ä¼šè®©ç­¹ç å‡ ä¹Žä¸è¡°å‡,
-    ä¸Šæ¶¨è¡Œæƒ…çš„èŽ·åˆ©æ¯”ä¾‹è¢«ç³»ç»Ÿæ€§é«˜ä¼°,ä¸€æ‰¹ä¸è¯¥å…¥é€‰çš„ç¥¨ä¼šå‡è£…è¾¾æ ‡ã€‚
+    ×¢Òâ volume ÒÔ¡¸ÊÖ¡¹¼Æ,»»ÊÖÂÊÐë³Ë VOLUME_UNIT¡£Â©³Ë»áÈÃ³ïÂë¼¸ºõ²»Ë¥¼õ,
+    ÉÏÕÇÐÐÇéµÄ»ñÀû±ÈÀý±»ÏµÍ³ÐÔ¸ß¹À,Ò»Åú²»¸ÃÈëÑ¡µÄÆ±»á¼Ù×°´ï±ê¡£
     """
     n = len(bars)
     if n == 0 or not float_shares or float_shares <= 0:
@@ -233,15 +245,47 @@ def _profit_ratio(bars, float_shares):
     return pd.Series(out, index=bars.index)
 
 
+def _normalize_flow(df):
+    """°Ñ Level2 ´óµ¥Í³¼Æ¹éµ½ÈÕÆµ:Ë÷Òý×ªÈÕÆÚ,Í¬ÈÕ¶àÌõÈ¡Ä©Öµ¡£
+
+    l2transactioncount ÊÇÅÌÖÐÀÛ¼ÆÖµ,Ò»Ìì¿ÉÄÜÓÐ¶àÌõ;
+    µ±ÈÕ¿Ú¾¶È¡ÊÕÅÌÊ±µÄÀÛ¼ÆÖµ,¼´Í¬ÈÕ×îºóÒ»Ìõ¡£
+    """
+    if df is None or len(df) == 0:
+        return None
+    if 'bidMostAmount' not in df.columns or 'offMostAmount' not in df.columns:
+        return None
+    out = df[['bidMostAmount', 'offMostAmount']].copy()
+    # Ë÷Òý¿ÉÄÜÊÇ '20240102150000' ÕâÑùµÄÊ±¼ä´Á×Ö·û´®,Ò²¿ÉÄÜÒÑ¾­ÊÇ DatetimeIndex¡£
+    # ¶ÔºóÕß×ö×Ö·û´®ÇÐÆ¬»áµÃµ½ '2024-01-',½âÎöÊ§°ÜºóÕûÁÐ±ä NaT,
+    # ½á¹ûÊÇ×Ê½ðÁ÷È«²¿¶ªÊ§¡¢ÓÀ²»´¥·¢ ¡ª¡ª Á½ÖÖ¶¼ÒªÄÜ´¦Àí¡£
+    try:
+        src_idx = pd.Index(out.index)
+        if isinstance(src_idx, pd.DatetimeIndex):
+            idx = src_idx.normalize()
+        else:
+            idx = pd.to_datetime(src_idx.astype(str).str.slice(0, 8),
+                                 format='%Y%m%d', errors='coerce')
+    except Exception:
+        return None
+    out.index = idx
+    out = out[out.index.notna()]
+    if not len(out):
+        return None
+    for c in ('bidMostAmount', 'offMostAmount'):
+        out[c] = pd.to_numeric(out[c], errors='coerce')
+    return out.groupby(level=0).last().sort_index()
+
+
 def evaluate_series(bars, float_shares, flow):
-    """ä¸€æ¬¡ç®—å‡ºæ•´æ®µçš„é€æ—¥å…¥é€‰åˆ¤å®š,è¿”å›ž DataFrame(ç´¢å¼•åŒ bars)ã€‚
+    """Ò»´ÎËã³öÕû¶ÎµÄÖðÈÕÈëÑ¡ÅÐ¶¨,·µ»Ø DataFrame(Ë÷ÒýÍ¬ bars)¡£
 
-    å›žæµ‹çš„å…³é”®:æ•´æ®µåªç®—ä¸€æ¬¡ã€‚è‹¥æ¯æ ¹Kçº¿éƒ½é‡ç®—ä¸€éå…¨å¸‚åœº,
-    ä¸€å¹´ 242 æ ¹Kçº¿å°±æ˜¯ 242 æ¬¡å…¨å¸‚åœºæ‰«æ,è€—æ—¶ç›¸å·®ä¸¤ä¸ªæ•°é‡çº§ã€‚
+    »Ø²âµÄ¹Ø¼ü:Õû¶ÎÖ»ËãÒ»´Î¡£ÈôÃ¿¸ùKÏß¶¼ÖØËãÒ»±éÈ«ÊÐ³¡,
+    Ò»Äê 242 ¸ùKÏß¾ÍÊÇ 242 ´ÎÈ«ÊÐ³¡É¨Ãè,ºÄÊ±Ïà²îÁ½¸öÊýÁ¿¼¶¡£
 
-    å„æ¡ä»¶éƒ½æ˜¯å› æžœçš„(åªç”¨å½“æ—¥åŠä¹‹å‰çš„æ•°æ®),æ‰€ä»¥æ•´æ®µä¸€æ¬¡ç®—å‡ºçš„ç¬¬ i æ—¥å–å€¼,
-    ä¸Žåªå–‚åˆ°ç¬¬ i æ—¥å†ç®—çš„ç»“æžœå®Œå…¨ç›¸åŒ â€”â€” ä¸å­˜åœ¨æœªæ¥å‡½æ•°,
-    ç”± tests/test_qmt_port.py çš„æˆªæ–­ä¸€è‡´æ€§æµ‹è¯•ä¿è¯ã€‚
+    ¸÷Ìõ¼þ¶¼ÊÇÒò¹ûµÄ(Ö»ÓÃµ±ÈÕ¼°Ö®Ç°µÄÊý¾Ý),ËùÒÔÕû¶ÎÒ»´ÎËã³öµÄµÚ i ÈÕÈ¡Öµ,
+    ÓëÖ»Î¹µ½µÚ i ÈÕÔÙËãµÄ½á¹ûÍêÈ«ÏàÍ¬ ¡ª¡ª ²»´æÔÚÎ´À´º¯Êý,
+    ÓÉ tests/test_qmt_port.py µÄ½Ø¶ÏÒ»ÖÂÐÔ²âÊÔ±£Ö¤¡£
     """
     n = len(bars)
     idx = bars.index
@@ -258,7 +302,7 @@ def evaluate_series(bars, float_shares, flow):
     turn = _ma_turn_up(d)
     vol_ok = _volume_surge_prev(d['volume'])
 
-    # èµ„é‡‘æµç¼ºå¤±æ—¶æ•´åˆ—ä¸º NaN,è¯¥æ—¥ä¸è§¦å‘ â€”â€” ä¸æŠŠç¼ºæ•°æ®å½“æˆã€Œæœ‰æµå…¥ã€æ”¾è¿‡
+    # ×Ê½ðÁ÷È±Ê§Ê±ÕûÁÐÎª NaN,¸ÃÈÕ²»´¥·¢ ¡ª¡ª ²»°ÑÈ±Êý¾Ýµ±³É¡¸ÓÐÁ÷Èë¡¹·Å¹ý
     if (flow is None or len(flow) == 0
             or 'bidMostAmount' not in flow.columns
             or 'offMostAmount' not in flow.columns):
@@ -280,9 +324,9 @@ def evaluate_series(bars, float_shares, flow):
 
 
 def evaluate_one(bars, float_shares, flow):
-    """åˆ¤æ–­ bars æœ€åŽä¸€æ ¹Kçº¿å½“æ—¥æ˜¯å¦å…¥é€‰,è¿”å›ž dict æˆ– Noneã€‚
+    """ÅÐ¶Ï bars ×îºóÒ»¸ùKÏßµ±ÈÕÊÇ·ñÈëÑ¡,·µ»Ø dict »ò None¡£
 
-    ä¾›å•åªè¯Šæ–­ä½¿ç”¨;æ‰¹é‡åœºæ™¯è¯·ç”¨ evaluate_series,é¿å…é‡å¤è®¡ç®—ã€‚
+    ¹©µ¥Ö»Õï¶ÏÊ¹ÓÃ;ÅúÁ¿³¡¾°ÇëÓÃ evaluate_series,±ÜÃâÖØ¸´¼ÆËã¡£
     """
     res = evaluate_series(bars, float_shares, flow)
     if not len(res) or not bool(res['triggered'].iloc[-1]):
@@ -297,14 +341,14 @@ def evaluate_one(bars, float_shares, flow):
     }
 
 
-# ------------------------------------------------------------------ QMT å…¥å£
-# è‚¡ç¥¨æ± å­˜æ¨¡å—çº§å˜é‡,ä¸æŒ‚åˆ° C ä¸Šã€‚
-# QMT é‡ŒçœŸæ­£çš„ä¸Šä¸‹æ–‡æ˜¯ __PyContext(C++ å¯¹è±¡),ä¸æ˜¯ xtquant çš„ qmttools.ContextInfo,
-# å±žæ€§é›†ä¸åŒ,ä¹Ÿæœªå¿…å…è®¸æŒ‚è‡ªå®šä¹‰å±žæ€§ã€‚å‡¡æ˜¯ C ä¸Šçš„ä¸œè¥¿ä¸€å¾‹é˜²å¾¡æ€§è®¿é—®ã€‚
+# ------------------------------------------------------------------ QMT Èë¿Ú
+# ¹ÉÆ±³Ø´æÄ£¿é¼¶±äÁ¿,²»¹Òµ½ C ÉÏ¡£
+# QMT ÀïÕæÕýµÄÉÏÏÂÎÄÊÇ __PyContext(C++ ¶ÔÏó),²»ÊÇ xtquant µÄ qmttools.ContextInfo,
+# ÊôÐÔ¼¯²»Í¬,Ò²Î´±ØÔÊÐí¹Ò×Ô¶¨ÒåÊôÐÔ¡£·²ÊÇ C ÉÏµÄ¶«Î÷Ò»ÂÉ·ÀÓùÐÔ·ÃÎÊ¡£
 _UNIVERSE = []
-_PICKS_BY_DAY = {}        # å›žæµ‹ç¼“å­˜:{æ—¥æœŸ: [å…¥é€‰è®°å½•]},æ•´æ®µåªç®—ä¸€æ¬¡
+_PICKS_BY_DAY = {}        # »Ø²â»º´æ:{ÈÕÆÚ: [ÈëÑ¡¼ÇÂ¼]},Õû¶ÎÖ»ËãÒ»´Î
 _SCANNED = False
-_FLOAT_SHARES = {}        # init é‡Œé¡ºæ‰‹å­˜ä¸‹,é¿å…æ‰«ææ—¶å†æ¬¡è°ƒ get_instrument_detail
+_FLOAT_SHARES = {}        # init ÀïË³ÊÖ´æÏÂ,±ÜÃâÉ¨ÃèÊ±ÔÙ´Îµ÷ get_instrument_detail
 
 
 def init(C):
@@ -312,11 +356,11 @@ def init(C):
     _UNIVERSE = []
     _PICKS_BY_DAY = {}
     _FLOAT_SHARES = {}
-    _SCANNED = False          # é‡è·‘æ—¶å¿…é¡»æ¸…æŽ‰,å¦åˆ™æ²¿ç”¨ä¸Šä¸€è½®çš„ç»“æžœ
+    _SCANNED = False          # ÖØÅÜÊ±±ØÐëÇåµô,·ñÔòÑØÓÃÉÏÒ»ÂÖµÄ½á¹û
     try:
         codes = C.get_stock_list_in_sector(SECTOR) or []
     except Exception as e:
-        print('å–è‚¡ç¥¨æ± å¤±è´¥:%s' % e)
+        print('È¡¹ÉÆ±³ØÊ§°Ü:%s' % e)
         codes = []
 
     kept, skip_st, skip_new = [], 0, 0
@@ -328,11 +372,11 @@ def init(C):
         if not info:
             continue
         name = info.get('InstrumentName') or ''
-        if EXCLUDE_ST and ('ST' in name.upper() or 'é€€' in name):
+        if EXCLUDE_ST and ('ST' in name.upper() or 'ÍË' in name):
             skip_st += 1
             continue
         opened = str(info.get('OpenDate') or '')
-        # æœªé€€å¸‚åˆçº¦çš„ ExpireDate å¸¸å¡«å“¨å…µå€¼ 99999999,ç›´æŽ¥è§£æžä¼šæŠ›å¼‚å¸¸
+        # Î´ÍËÊÐºÏÔ¼µÄ ExpireDate ³£ÌîÉÚ±øÖµ 99999999,Ö±½Ó½âÎö»áÅ×Òì³£
         if len(opened) == 8 and opened.isdigit():
             try:
                 days = (pd.Timestamp.today() - pd.Timestamp(opened)).days
@@ -346,24 +390,24 @@ def init(C):
         except Exception:
             fs = 0.0
         if fs <= 0:
-            continue                      # æ— æµé€šè‚¡æœ¬åˆ™ç­¹ç æ— ä»Žç®—èµ·
+            continue                      # ÎÞÁ÷Í¨¹É±¾Ôò³ïÂëÎÞ´ÓËãÆð
         _FLOAT_SHARES[code] = fs
         kept.append(code)
 
     _UNIVERSE = kept
-    print('è‚¡ç¥¨æ±  %d åª(å‰”é™¤ ST %dã€æ¬¡æ–° %d)' % (len(kept), skip_st, skip_new))
-    print('æ¡ä»¶: å½¢æ€ç»´æŒ ä¸” å‡çº¿è½¬å‘ ä¸” èŽ·åˆ©ç­¹ç >%.0f%% ä¸” èµ„é‡‘æµå…¥>0 ä¸” é‡>å‰ä¸€æ—¥'
+    print('¹ÉÆ±³Ø %d Ö»(ÌÞ³ý ST %d¡¢´ÎÐÂ %d)' % (len(kept), skip_st, skip_new))
+    print('Ìõ¼þ: ÐÎÌ¬Î¬³Ö ÇÒ ¾ùÏß×ªÏò ÇÒ »ñÀû³ïÂë>%.0f%% ÇÒ ×Ê½ðÁ÷Èë>0 ÇÒ Á¿>Ç°Ò»ÈÕ'
           % (PROFIT_MIN * 100))
 
 
 def _should_scan(C):
-    """æœ¬æ ¹Kçº¿æ˜¯å¦è¦åšæ‰«æã€‚
+    """±¾¸ùKÏßÊÇ·ñÒª×öÉ¨Ãè¡£
 
-    ä¸ä½¿ç”¨ C.trade_mode â€”â€” QMT çš„ __PyContext æ²¡æœ‰è¯¥å±žæ€§(æ›¾å› æ­¤æŠ¥
-    AttributeError)ã€‚æ”¹ç”± SCAN_EVERY_BAR æ˜¾å¼æŽ§åˆ¶:
-      False(é»˜è®¤)åªåœ¨æœ€æ–°Kçº¿æ‰«æ,å®žç›˜/ç›˜åŽé€‰è‚¡ç”¨;
-      True æ¯æ ¹Kçº¿éƒ½æ‰«,å›žæµ‹æ—¶ç”¨æ¥é€æ—¥è¾“å‡ºé€‰è‚¡ã€‚
-    is_last_bar ä¹Ÿå¯èƒ½ç¼ºå¤±,å–ä¸åˆ°æ—¶æŒ‰ã€Œæ‰«æã€å¤„ç†,å®å¯å¤šè·‘ä¸å¯ä¸è·‘ã€‚
+    ²»Ê¹ÓÃ C.trade_mode ¡ª¡ª QMT µÄ __PyContext Ã»ÓÐ¸ÃÊôÐÔ(ÔøÒò´Ë±¨
+    AttributeError)¡£¸ÄÓÉ SCAN_EVERY_BAR ÏÔÊ½¿ØÖÆ:
+      False(Ä¬ÈÏ)Ö»ÔÚ×îÐÂKÏßÉ¨Ãè,ÊµÅÌ/ÅÌºóÑ¡¹ÉÓÃ;
+      True Ã¿¸ùKÏß¶¼É¨,»Ø²âÊ±ÓÃÀ´ÖðÈÕÊä³öÑ¡¹É¡£
+    is_last_bar Ò²¿ÉÄÜÈ±Ê§,È¡²»µ½Ê±°´¡¸É¨Ãè¡¹´¦Àí,Äþ¿É¶àÅÜ²»¿É²»ÅÜ¡£
     """
     if SCAN_EVERY_BAR:
         return True
@@ -374,14 +418,19 @@ def _should_scan(C):
 
 
 def _bar_date(C):
-    """å½“å‰Kçº¿æ—¥æœŸ;å–ä¸åˆ°å°±è¿”å›žç©ºä¸²,ä¸å½±å“é€‰è‚¡ã€‚"""
+    """µ±Ç°KÏßÈÕÆÚ(YYYY-MM-DD);È¡²»µ½·µ»Ø¿Õ´®¡£
+
+    ¹Ù·½Ê¾ÀýÓÃµÄÊÇÈ«¾Öº¯Êý timetag_to_datetime(C.get_bar_timetag(C.barpos), fmt),
+    ËüÔÚ QMT ÄÚÖÃ»·¾³ÊÇÄÚ½¨µÄ;±¾µØÅÜ²âÊÔÊ±²»´æÔÚ,¹Ê½µ¼¶µ½ pandas ½âÎö¡£
+    """
     try:
         tt = C.get_bar_timetag(C.barpos)
     except Exception:
-        try:
-            tt = C.get_bar_timetag()
-        except Exception:
-            return ''
+        return ''
+    try:
+        return timetag_to_datetime(tt, '%Y-%m-%d')      # noqa: F821  QMT ÄÚ½¨
+    except Exception:
+        pass
     try:
         return pd.Timestamp(tt, unit='ms').strftime('%Y-%m-%d')
     except Exception:
@@ -389,14 +438,14 @@ def _bar_date(C):
 
 
 def _scan_all(C, codes, verbose=True):
-    """å¯¹è‚¡ç¥¨æ± æ•´æ®µæ‰«æä¸€æ¬¡,è¿”å›ž {æ—¥æœŸå­—ç¬¦ä¸²: [å…¥é€‰è®°å½•, ...]}ã€‚
+    """¶Ô¹ÉÆ±³ØÕû¶ÎÉ¨ÃèÒ»´Î,·µ»Ø {ÈÕÆÚ×Ö·û´®: [ÈëÑ¡¼ÇÂ¼, ...]}¡£
 
-    è¿™æ˜¯å›žæµ‹æé€Ÿçš„å…³é”®ã€‚åŽŸå…ˆ handlebar æ¯æ ¹Kçº¿éƒ½é‡ç®—ä¸€éå…¨å¸‚åœº,
-    ä¸€å¹´ 242 æ ¹Kçº¿ = 242 æ¬¡å…¨å¸‚åœºæ‰«æ;çŽ°åœ¨æ•´æ®µåªç®—ä¸€æ¬¡,
-    ä¹‹åŽæ¯æ ¹Kçº¿åªåšä¸€æ¬¡å­—å…¸æŸ¥è¡¨ã€‚å®žæµ‹å·®çº¦ä¸¤ä¸ªæ•°é‡çº§ã€‚
+    ÕâÊÇ»Ø²âÌáËÙµÄ¹Ø¼ü¡£Ô­ÏÈ handlebar Ã¿¸ùKÏß¶¼ÖØËãÒ»±éÈ«ÊÐ³¡,
+    Ò»Äê 242 ¸ùKÏß = 242 ´ÎÈ«ÊÐ³¡É¨Ãè;ÏÖÔÚÕû¶ÎÖ»ËãÒ»´Î,
+    Ö®ºóÃ¿¸ùKÏßÖ»×öÒ»´Î×Öµä²é±í¡£Êµ²â²îÔ¼Á½¸öÊýÁ¿¼¶¡£
 
-    åˆ†æ‰¹æ‰“å°å„é˜¶æ®µè€—æ—¶ä¸Žé¢„è®¡å‰©ä½™ â€”â€” å…¨å¸‚åœºè¦è·‘å¥½å‡ åˆ†é’Ÿ,
-    æ²¡æœ‰è¿›åº¦å°±åˆ†ä¸æ¸…æ˜¯åœ¨ç®—è¿˜æ˜¯å¡æ­»äº†ã€‚
+    ·ÖÅú´òÓ¡¸÷½×¶ÎºÄÊ±ÓëÔ¤¼ÆÊ£Óà ¡ª¡ª È«ÊÐ³¡ÒªÅÜºÃ¼¸·ÖÖÓ,
+    Ã»ÓÐ½ø¶È¾Í·Ö²»ÇåÊÇÔÚËã»¹ÊÇ¿¨ËÀÁË¡£
     """
     import time
     by_day = {}
@@ -407,23 +456,31 @@ def _scan_all(C, codes, verbose=True):
         chunk = codes[i:i + BATCH_SIZE]
         t0 = time.time()
         try:
+            # subscribe=False:¹Ù·½ÎÄµµ¡¸»Ø²âÄ£ÐÍÈ¡±¾µØÊý¾Ý±éÀú,²»ÐèÒªÏò·þÎñÆ÷
+            # ¶©ÔÄÊµÊ±ÐÐÇé,Ó¦Ê¹ÓÃ get_market_data_ex ²¢Ö¸¶¨ subscribe Îª False¡¹¡£
+            # ¶©ÔÄÄ£Ê½»¹ÓÐ¹ÉÆ±ÊýÁ¿ÉÏÏÞ,È«ÊÐ³¡É¨Ãè±ØÐë¹Øµô¡£
             data = C.get_market_data_ex(
                 ['open', 'high', 'low', 'close', 'volume', 'amount'],
                 chunk, period='1d', count=HISTORY_BARS,
-                dividend_type='back', fill_data=False) or {}
+                dividend_type='back', fill_data=False, subscribe=False) or {}
         except Exception as e:
-            print('å–è¡Œæƒ…å¤±è´¥:%s' % e)
+            print('È¡ÐÐÇéÊ§°Ü:%s' % e)
             continue
         t_bars = time.time() - t0
 
         t0 = time.time()
         try:
-            flows = C.get_market_data_ex(
+            raw_flows = C.get_market_data_ex(
                 ['bidMostAmount', 'offMostAmount'], chunk,
-                period='transactioncount1d', count=HISTORY_BARS,
-                fill_data=False) or {}
+                period=FLOW_PERIOD, count=HISTORY_BARS * FLOW_BARS_PER_DAY,
+                fill_data=False, subscribe=False) or {}
+            flows = {}
+            for c, v in raw_flows.items():
+                nv = _normalize_flow(v)
+                if nv is not None:
+                    flows[c] = nv
         except Exception:
-            flows = {}          # æ— æŠ•ç ”ç‰ˆ/L2æƒé™æ—¶å–ä¸åˆ°,ä¸‹é¢ä¸€å¾‹ä¸è§¦å‘
+            flows = {}          # ÎÞ Level2 È¨ÏÞÊ±È¡²»µ½,ÏÂÃæÒ»ÂÉ²»´¥·¢
         t_flow = time.time() - t0
         t0 = time.time()
 
@@ -446,7 +503,7 @@ def _scan_all(C, codes, verbose=True):
                         'volume': float(row['volume']),
                     })
             except Exception as e:
-                print('%s è®¡ç®—å¤±è´¥:%s' % (code, e))
+                print('%s ¼ÆËãÊ§°Ü:%s' % (code, e))
         t_calc = time.time() - t0
 
         if verbose:
@@ -454,8 +511,8 @@ def _scan_all(C, codes, verbose=True):
             elapsed = time.time() - t_start
             eta = elapsed / done * (len(codes) - done) if done else 0
             n_hit = sum(len(v) for v in by_day.values())
-            print('  [%d/%d] è¡Œæƒ…%.1fs èµ„é‡‘æµ%.1fs è®¡ç®—%.1fs | ç´¯è®¡å‘½ä¸­%d | '
-                  'å·²ç”¨%.1fmin é¢„è®¡è¿˜éœ€%.1fmin'
+            print('  [%d/%d] ÐÐÇé%.1fs ×Ê½ðÁ÷%.1fs ¼ÆËã%.1fs | ÀÛ¼ÆÃüÖÐ%d | '
+                  'ÒÑÓÃ%.1fmin Ô¤¼Æ»¹Ðè%.1fmin'
                   % (done, len(codes), t_bars, t_flow, t_calc, n_hit,
                      elapsed / 60.0, eta / 60.0))
     return by_day
@@ -470,28 +527,28 @@ def handlebar(C):
     day = _bar_date(C)
     codes = _UNIVERSE
     if not codes:
-        print('è‚¡ç¥¨æ± ä¸ºç©º,è¯·ç¡®è®¤ init æ˜¯å¦æ­£å¸¸æ‰§è¡Œã€SECTOR æ˜¯å¦æ­£ç¡®')
+        print('¹ÉÆ±³ØÎª¿Õ,ÇëÈ·ÈÏ init ÊÇ·ñÕý³£Ö´ÐÐ¡¢SECTOR ÊÇ·ñÕýÈ·')
         return
 
     if SCAN_EVERY_BAR:
-        # å›žæµ‹:æ•´æ®µåªæ‰«ä¸€æ¬¡,ä¹‹åŽæ¯æ ¹Kçº¿æŸ¥è¡¨
+        # »Ø²â:Õû¶ÎÖ»É¨Ò»´Î,Ö®ºóÃ¿¸ùKÏß²é±í
         if not _SCANNED:
             if PROBE_FIRST and len(codes) > BATCH_SIZE:
-                # å…ˆè·‘ä¸€æ‰¹,ç«‹åˆ»ç»™å‡ºå…¨é‡è€—æ—¶é¢„ä¼° â€”â€” é¿å…å‚»ç­‰å‡ åˆ†é’Ÿæ‰çŸ¥é“è¦è·‘å¤šä¹…
+                # ÏÈÅÜÒ»Åú,Á¢¿Ì¸ø³öÈ«Á¿ºÄÊ±Ô¤¹À ¡ª¡ª ±ÜÃâÉµµÈ¼¸·ÖÖÓ²ÅÖªµÀÒªÅÜ¶à¾Ã
                 import time
                 t0 = time.time()
                 _scan_all(C, codes[:BATCH_SIZE], verbose=False)
                 per = (time.time() - t0) / BATCH_SIZE
-                print('æµ‹é€Ÿ:%d åªç”¨æ—¶ %.1fs,å…¨é‡ %d åªé¢„è®¡çº¦ %.1f åˆ†é’Ÿ'
+                print('²âËÙ:%d Ö»ÓÃÊ± %.1fs,È«Á¿ %d Ö»Ô¤¼ÆÔ¼ %.1f ·ÖÖÓ'
                       % (BATCH_SIZE, per * BATCH_SIZE, len(codes),
                          per * len(codes) / 60.0))
-            print('æ•´æ®µæ‰«æä¸­(åªåšä¸€æ¬¡)...')
+            print('Õû¶ÎÉ¨ÃèÖÐ(Ö»×öÒ»´Î)...')
             _PICKS_BY_DAY = _scan_all(C, codes)
             _SCANNED = True
-            print('æ‰«æå®Œæˆ,å…± %d ä¸ªäº¤æ˜“æ—¥æœ‰å…¥é€‰' % len(_PICKS_BY_DAY))
+            print('É¨ÃèÍê³É,¹² %d ¸ö½»Ò×ÈÕÓÐÈëÑ¡' % len(_PICKS_BY_DAY))
         picks = list(_PICKS_BY_DAY.get(day, []))
     else:
-        # å®žç›˜/ç›˜åŽ:åªçœ‹æœ€æ–°ä¸€æ ¹Kçº¿,ç›´æŽ¥ç®—
+        # ÊµÅÌ/ÅÌºó:Ö»¿´×îÐÂÒ»¸ùKÏß,Ö±½ÓËã
         picks = []
         scanned = _scan_all(C, codes)
         if day:
@@ -501,10 +558,10 @@ def handlebar(C):
 
     picks.sort(key=lambda x: x['profit_ratio'], reverse=True)
     print('=' * 60)
-    print('%s å…¥é€‰ %d åª' % (day, len(picks)))
+    print('%s ÈëÑ¡ %d Ö»' % (day, len(picks)))
     for p in picks[:PRINT_LIMIT]:
-        print('  %s  æ”¶%.2f  èŽ·åˆ©ç­¹ç %.1f%%  å‡€æµå…¥%.0f  é‡%.0f'
+        print('  %s  ÊÕ%.2f  »ñÀû³ïÂë%.1f%%  ¾»Á÷Èë%.0f  Á¿%.0f'
               % (p['code'], p['close'], p['profit_ratio'] * 100,
                  p['net_inflow'], p['volume']))
     if len(picks) > PRINT_LIMIT:
-        print('  ...(å…¶ä½™ %d åªå·²çœç•¥)' % (len(picks) - PRINT_LIMIT))
+        print('  ...(ÆäÓà %d Ö»ÒÑÊ¡ÂÔ)' % (len(picks) - PRINT_LIMIT))

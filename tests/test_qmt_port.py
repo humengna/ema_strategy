@@ -4,6 +4,7 @@
 QMT 环境里没有本包,那份文件是自包含的重写。两边若出现偏差,
 QMT 选出的票就和回测结果对不上 —— 这是最容易出、也最难察觉的错。
 """
+import ast
 import importlib.util
 import os
 
@@ -24,9 +25,15 @@ QMT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 
 @pytest.fixture(scope="module")
 def qmt():
-    spec = importlib.util.spec_from_file_location("golden_eye_qmt", QMT_PATH)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    """按 GBK 读入后执行。
+
+    文件首行声明 #coding:gbk 且实际以 GBK 存储(官方文档硬性要求),
+    Python 默认按 UTF-8 读源码会直接报 SyntaxError,故显式解码后 exec。
+    """
+    src = open(QMT_PATH, encoding="gbk").read()
+    mod = importlib.util.module_from_spec(
+        importlib.util.spec_from_loader("golden_eye_qmt", loader=None))
+    exec(compile(src, QMT_PATH, "exec"), mod.__dict__)
     return mod
 
 
@@ -173,7 +180,8 @@ class MinimalContext:
     def get_market_data_ex(self, fields, stock_code, period='1d', start_time='',
                            end_time='', count=-1, dividend_type='', fill_data=True,
                            subscribe=True):
-        src = self._flows if period == 'transactioncount1d' else self._bars
+        # 资金流走 l2transactioncount(内置 API 的周期名),与被测文件保持一致
+        src = self._flows if period == 'l2transactioncount' else self._bars
         return {c: src[c] for c in stock_code if c in src}
 
     def get_bar_timetag(self, barpos=None):
@@ -218,7 +226,7 @@ def test_handlebar_without_is_last_bar(qmt, ctx_data, capsys):
 def test_no_trade_mode_access(qmt):
     """源码里不得再出现 C.trade_mode / C.universe 的实际访问。"""
     import ast
-    src = open(QMT_PATH, encoding="utf-8").read()
+    src = open(QMT_PATH, encoding="gbk").read()
     used = {n.attr for n in ast.walk(ast.parse(src))
             if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
             and n.value.id == "C"}
@@ -231,7 +239,7 @@ def test_only_known_context_members(qmt):
     import ast
     allowed = {"get_stock_list_in_sector", "get_instrument_detail",
                "get_market_data_ex", "is_last_bar", "get_bar_timetag", "barpos"}
-    src = open(QMT_PATH, encoding="utf-8").read()
+    src = open(QMT_PATH, encoding="gbk").read()
     used = {n.attr for n in ast.walk(ast.parse(src))
             if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
             and n.value.id == "C"}
@@ -344,3 +352,66 @@ def test_universe_excludes_missing_float_shares(qmt, bars):
     C = MinimalContext(b, {}, d)
     qmt.init(C)
     assert code not in qmt._UNIVERSE
+
+
+# -------------------------------------------- 与官方文档对齐的检查
+def test_coding_declaration_is_gbk():
+    """官方《快速开始》要求首行 #coding:gbk,且脚本本身必须是 GBK 编码。
+
+    两者必须一致 —— 声明 gbk 却存成 UTF-8,QMT 会直接报解码错。
+    """
+    raw = open(QMT_PATH, "rb").read()
+    assert raw.split(b"\n", 1)[0].strip() == b"#coding:gbk"
+    raw.decode("gbk")                       # 能按 GBK 解出来才算数
+    with pytest.raises(UnicodeDecodeError):
+        raw.decode("utf-8")                 # 且确实不是 UTF-8
+
+
+def test_market_data_uses_subscribe_false():
+    """官方文档:回测取本地数据应指定 subscribe=False。
+
+    订阅模式还有股票数量上限,全市场扫描必须关掉。
+    """
+    src = open(QMT_PATH, encoding="gbk").read()
+    calls = [n for n in ast.walk(ast.parse(src))
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+             and n.func.attr == "get_market_data_ex"]
+    assert calls, "未找到 get_market_data_ex 调用"
+    for call in calls:
+        kw = {k.arg: k.value for k in call.keywords}
+        assert "subscribe" in kw, "get_market_data_ex 必须显式传 subscribe"
+        assert kw["subscribe"].value is False
+
+
+def test_flow_period_is_l2transactioncount(qmt):
+    """内置 API 的周期列表里没有 transactioncount1d,那是 xtdata 侧的周期。
+
+    bidMostAmount/offMostAmount 只在 l2transactioncount 里。
+    只检查实际生效的常量,注释里为说明缘由而提到旧周期名是允许的。
+    """
+    assert qmt.FLOW_PERIOD == "l2transactioncount"
+
+
+def test_normalize_flow_takes_last_per_day(qmt):
+    """L2 大单统计是盘中累计值,同日多条应取末值。"""
+    raw = pd.DataFrame({"bidMostAmount": [1.0, 5.0, 2.0, 9.0],
+                        "offMostAmount": [1.0, 2.0, 1.0, 4.0]},
+                       index=["20240102093000", "20240102150000",
+                              "20240103093000", "20240103150000"])
+    out = qmt._normalize_flow(raw)
+    assert out["bidMostAmount"].tolist() == [5.0, 9.0]
+    assert out["offMostAmount"].tolist() == [2.0, 4.0]
+
+
+def test_normalize_flow_rejects_bad_input(qmt):
+    assert qmt._normalize_flow(None) is None
+    assert qmt._normalize_flow(pd.DataFrame()) is None
+    assert qmt._normalize_flow(pd.DataFrame({"x": [1]}, index=["20240102"])) is None
+
+
+def test_python36_compatible_syntax():
+    """QMT 内置 Python 为 3.6,不得使用 3.7+ 语法(如 dataclasses、海象运算符)。"""
+    src = open(QMT_PATH, encoding="gbk").read()
+    assert "dataclass" not in src
+    assert ":=" not in src
+    assert "from __future__" not in src
