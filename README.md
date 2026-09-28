@@ -74,6 +74,34 @@ python scripts/backtest.py --csv-dir tests          # 用本地CSV,不依赖 QMT
 python scripts/backtest.py --limit 100              # 先跑 100 只
 ```
 
+### 查单只股票某天是否入选
+
+`scripts/check_one.py` 的默认参数就是最终敲定的那一版口径(均线转向、
+放量=高于前一日、获利筹码>85%、不要求回踩),不用每次都把一串开关敲全:
+
+```bash
+# 单日:逐条列出五个条件过没过
+python scripts/check_one.py 000001.SZ 20260904
+
+# 区间:一次列出每天的结论,并统计是哪个条件卡住的
+python scripts/check_one.py 000001.SZ --from 20260801 --to 20260930
+
+# 已下载过数据就别再等下载
+python scripts/check_one.py 000001.SZ 20260904 --no-download
+
+# 不连 QMT,用本地CSV验证脚本本身
+python scripts/check_one.py INTC --csv tests/intc.csv --from 20030401 --to 20030630
+```
+
+区间模式整段只算一次再按日切片;所有条件都只用当日及之前的数据,
+所以切片结论与「只喂到当日再算」相同。加 `--verify` 会逐日截断重算并比对,
+当场证明没有用到未来数据。
+
+查出来一天都没入选时,先看末行的「各条件未通过次数」:
+`流入` 全数未通过通常是取不到 `bidMostAmount/offMostAmount`
+(缺数据一律判不通过,绝不当成「有流入」放过),
+`形态维持` 全数未通过说明这只票压根不在黄金眼形态里。
+
 `--explain` 输出示例:
 
 ```
@@ -189,7 +217,7 @@ print(es.explain("000001.SZ", bars))        # 逐条诊断
 python -m pytest
 ```
 
-238 项测试,不需要 QMT 环境。测试数据取自 matplotlib/mplfinance 仓库的公开示例
+251 项测试,不需要 QMT 环境。测试数据取自 matplotlib/mplfinance 仓库的公开示例
 (BSD 许可),选它们是为了让全部测试在任何平台都能跑通。
 
 覆盖:K线分类的四种情形与取等号边界、金叉/死叉、三金叉序列的顺序不变量、

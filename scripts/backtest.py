@@ -222,7 +222,9 @@ def main(argv=None) -> int:
                         volume_ratio=a.volume_ratio, volume_window=a.volume_window,
                         require_pullback=not a.no_pullback,
                         pullback_window=a.pullback_window,
-                        require_ma_turn=a.ma_turn, volume_mode=a.volume_mode)
+                        require_ma_turn=a.ma_turn, volume_mode=a.volume_mode,
+                        # 本地CSV(美股示例数据)的 volume 已是股数,不是「手」
+                        chip_volume_unit=1 if a.csv_dir else 100)
 
     all_events, fwd_by_code = [], {h: {} for h in holds}
     no_flow_count = 0
@@ -251,7 +253,10 @@ def main(argv=None) -> int:
             cols = feed.PRICE_COLS + (["volume"] if "volume" in d.columns else [])
             d = d[cols].dropna()
             if "volume" in d.columns and "amount" not in d.columns:
-                d["amount"] = d["close"] * d["volume"] * 100
+                # volume 已是股数,amount 就是 收盘价 x 股数;
+                # 多乘 100 会让均价(amount/股数)被夹到当日最高价,
+                # 筹码三角分布的峰值就永远贴着上沿。
+                d["amount"] = d["close"] * d["volume"]
             handle(code, d, 1e9, None)
     else:
         codes = ([c.strip() for c in a.codes.split(",") if c.strip()] if a.codes

@@ -53,6 +53,10 @@ class BullParams:
     volume_window: int = 5         # 均量窗口(不含当日)
     chip_decay: float = 1.0        # 筹码换手衰减系数
     chip_bin_pct: float = 0.002    # 筹码价格网格步长,见 chips.profit_ratio
+    # 成交量单位:A股(xtdata)按「手」计 = 100;若 bars 的 volume 已是股数则填 1。
+    # 填错 100 倍会让换手率错两个数量级,筹码要么几乎不衰减(高估获利比例)、
+    # 要么每天被整段冲掉(获利比例逐日乱跳),两种都会让阈值筛选彻底失真。
+    chip_volume_unit: int = 100
 
     @property
     def warmup(self) -> int:
@@ -225,7 +229,8 @@ def run(bars: pd.DataFrame, float_shares: float | pd.Series,
         daily["profit_source"] = "外部"
     else:
         daily["profit_ratio"] = profit_ratio(bars, float_shares,
-                                             decay=p.chip_decay, bin_pct=p.chip_bin_pct)
+                                             decay=p.chip_decay, bin_pct=p.chip_bin_pct,
+                                             volume_unit=p.chip_volume_unit)
         daily["profit_source"] = "内置换手衰减法"
     daily["net_inflow"] = net_inflow(flow, daily.index)
     daily["vol_surge"] = volume_surge(bars["volume"], p.volume_window,
