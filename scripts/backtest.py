@@ -190,6 +190,8 @@ def main(argv=None) -> int:
     ap.add_argument("--codes", default="")
     ap.add_argument("--sector", default="沪深A股")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--batch", type=int, default=200,
+                    help="每批处理多少只。取数是瓶颈时可试着调大或调小")
     ap.add_argument("--no-download", action="store_true", dest="no_download",
                     help="跳过下载,直接读 QMT 本地缓存(数据已下过时用,快很多)")
     ap.add_argument("--csv-dir", default="", dest="csv_dir",
@@ -261,25 +263,35 @@ def main(argv=None) -> int:
         print("跳过下载,直接读 QMT 本地缓存" if a.no_download
               else "将下载缺失的历史数据(首次较慢;数据已下过可加 --no-download)")
         t_start = time.perf_counter()
-        for i in range(0, len(codes), 200):
-            chunk = codes[i:i + 200]
+        for i in range(0, len(codes), a.batch):
+            chunk = codes[i:i + a.batch]
+            t0 = time.perf_counter()
             try:
                 data = feed.fetch_daily(chunk, a.start, a.end,
                                         download=not a.no_download)
             except Exception as exc:
                 print(f"    行情批次失败:{type(exc).__name__}: {exc}", file=sys.stderr)
                 continue
+            t_bars = time.perf_counter() - t0
+
+            t0 = time.perf_counter()
             flows = (feed.fetch_money_flow(chunk, a.start, a.end, verbose=(i == 0),
                                            download=not a.no_download)
                      if a.strategy == "bull" and not a.no_flow else {})
             floats = feed.fetch_float_shares(chunk) if a.strategy == "bull" else {}
+            t_aux = time.perf_counter() - t0
+
+            t0 = time.perf_counter()
             for code, bars in data.items():
                 handle(code, bars, floats.get(code, 0.0), flows.get(code))
+            t_calc = time.perf_counter() - t0
+
             done = i + len(chunk)
             elapsed = time.perf_counter() - t_start
             eta = elapsed / done * (len(codes) - done)
-            print(f"  [{done}/{len(codes)}] 已用 {elapsed / 60:.1f}min,"
-                  f"预计还需 {eta / 60:.1f}min", flush=True)
+            print(f"  [{done}/{len(codes)}] 行情{t_bars:.1f}s 资金流+股本{t_aux:.1f}s "
+                  f"计算{t_calc:.1f}s | 已用{elapsed / 60:.1f}min "
+                  f"预计还需{eta / 60:.1f}min", flush=True)
 
     if a.strategy == "bull" and no_flow_count:
         print(f"\n跳过 {no_flow_count} 只:无资金流数据。"

@@ -214,7 +214,8 @@ def run(bars: pd.DataFrame, float_shares: float | pd.Series,
     if not bars.index.is_monotonic_increasing:
         raise ValueError("bars.index 必须按时间升序")
 
-    daily = prepare(bars, p.seq)
+    # bull 策略不使用 bar_type / regime,跳过可省约三分之二的 prepare 耗时
+    daily = prepare(bars, p.seq, with_bar_type=False)
     sequences = find_sequences(daily, p.seq)
     state = pattern_state(daily, sequences)
 

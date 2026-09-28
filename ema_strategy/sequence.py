@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from .indicators import GAP, PIERCE, add_ma, classify_bar, cross_down, cross_up, ma_regime
@@ -46,11 +47,17 @@ class Params:
         return self.slow + 5
 
 
-def prepare(df: pd.DataFrame, p: Params) -> pd.DataFrame:
-    """附加均线、K线分类、均线排列。"""
+def prepare(df: pd.DataFrame, p: Params, with_bar_type: bool = True) -> pd.DataFrame:
+    """附加均线、K线分类、均线排列。
+
+    with_bar_type=False 时只算均线,跳过 classify_bar 与 ma_regime。
+    bull 策略用不到这两列,而它们占 prepare 近三分之二的时间
+    (实测 3.5ms / 5.6ms),全市场扫描时是纯浪费。
+    """
     d = add_ma(df, p.fast, p.mid, p.slow, p.ma_kind)
-    d["bar_type"] = classify_bar(d)
-    d["regime"] = ma_regime(d)
+    if with_bar_type:
+        d["bar_type"] = classify_bar(d)
+        d["regime"] = ma_regime(d)
     return d
 
 
@@ -60,8 +67,13 @@ def find_sequences(d: pd.DataFrame, p: Params) -> pd.DataFrame:
     c2 = cross_up(d["ma_f"], d["ma_s"]).to_numpy()   # 2号:MA5 上穿 MA30
     c3 = cross_up(d["ma_m"], d["ma_s"]).to_numpy()   # 3号:MA10 上穿 MA30
     dead = cross_down(d["ma_f"], d["ma_m"]).to_numpy()
-    bar = d["bar_type"].to_numpy()
-    regime = d["regime"].to_numpy()
+    # bar_type / regime 只用于记录序列两端的形态。bull 策略不需要它们,
+    # 会用 prepare(with_bar_type=False) 跳过计算;此处容忍缺列。
+    n = len(d)
+    bar = (d["bar_type"].to_numpy() if "bar_type" in d.columns
+           else np.full(n, None, dtype=object))
+    regime = (d["regime"].to_numpy() if "regime" in d.columns
+              else np.full(n, None, dtype=object))
     idx = d.index
 
     rows, i1, i2 = [], None, None
